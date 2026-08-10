@@ -1,0 +1,14 @@
+# Paths for the example IOC.
+#
+# ADSimDetector and friends live INSIDE the areaDetector tree, so their IOC
+# RELEASE can pull $(TOP)/../../../configure/RELEASE_PRODS_INCLUDE. This module
+# lives outside it, where that path resolves to examples/configure and does not
+# exist -- so we include the module's own configure/RELEASE, which already names
+# EPICS_BASE, ADCORE, ASYN and the rest.
+
+ADAXISSXR40 = $(TOP)/../..
+
+include $(ADAXISSXR40)/configure/RELEASE
+
+-include $(TOP)/RELEASE.local
+-include $(TOP)/configure/RELEASE.local

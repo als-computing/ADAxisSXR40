@@ -1,0 +1,20 @@
+# RELEASE - paths to the modules this driver builds against.
+#
+# Populated for the synApps installation on this host. Override locally with
+# configure/RELEASE.local rather than editing this file.
+
+SUPPORT        = /opt/epics/synApps/support
+AREA_DETECTOR  = $(SUPPORT)/areaDetector-R3-14
+ADCORE         = $(AREA_DETECTOR)/ADCore
+ADSUPPORT      = $(AREA_DETECTOR)/ADSupport
+ASYN           = $(SUPPORT)/asyn-R4-45
+AUTOSAVE       = $(SUPPORT)/autosave-R6-0
+BUSY           = $(SUPPORT)/busy-R1-7-4
+CALC           = $(SUPPORT)/calc-R3-7-5
+SNCSEQ         = $(SUPPORT)/sequencer-R2-2-9
+SSCAN          = $(SUPPORT)/sscan-R2-12
+DEVIOCSTATS    = $(SUPPORT)/iocStats-4-0-1
+
+EPICS_BASE     = /opt/epics/epics-base
+
+-include $(TOP)/configure/RELEASE.local

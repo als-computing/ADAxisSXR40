@@ -1,0 +1,42 @@
+# CONFIG_SITE -- site-specific build settings for ADAxisSXR40
+#
+# The Tucsen TUCam SDK is installed system-wide, so this module holds no copy of
+# it and needs no path into any source checkout:
+#
+#     headers   TUCamApi.h, TUDefine.h   ->  /usr/local/include/tucam
+#     library   libTUCam.so.1            ->  /usr/lib/x86_64-linux-gnu
+#
+# Both are placed there by the SDK's installer (sdk/install.sh), which also
+# creates the SONAME chain and runs ldconfig. Verify with sdk/check.sh.
+#
+# The SDK is obtained from Tucsen. This driver was developed against the Linux
+# package ubuntu18.04_20240628.tar.zip:
+#     https://www.tucsen.com/uploads/ubuntu18.04_20240628.tar.zip
+# with all current releases at https://www.tucsen.com/download-software/
+#
+# Why system-wide rather than a copy inside this module: one installed set means
+# there is nothing to drift out of step with the library it declares. A local
+# header copy that is merely out of date still compiles, and the mismatch then
+# shows up as unexplained runtime behaviour instead of a build error. check.sh
+# compares the installed headers against the SDK source to catch exactly that.
+#
+# So: do not add TUCamApi.h / TUDefine.h to this module. To build against a
+# different SDK version, install that version.
+#
+# If your headers live elsewhere, override in configure/CONFIG_SITE.local
+# (gitignored) rather than editing this file:
+#
+#     TUCAM_INCLUDE = /some/other/prefix/include/tucam
+
+TUCAM_INCLUDE = /usr/local/include/tucam
+
+# Link the system-installed libTUCam rather than staging a private copy under
+# this module's lib/, which is what the other branch in
+# axisSXR40App/src/Makefile expects.
+TUCAM_EXTERNAL = YES
+
+# Build the example IOC under iocs/ as part of the top-level make. Without
+# this the IOC is silently skipped and only the driver library is built.
+BUILD_IOCS = YES
+
+-include $(TOP)/configure/CONFIG_SITE.local

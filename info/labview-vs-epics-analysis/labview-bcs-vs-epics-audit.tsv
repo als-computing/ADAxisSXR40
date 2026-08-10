@@ -1,0 +1,110 @@
+BCS ID	Parameter	Description	EPICS	EPICS PV	EPICS RBV	Exists?	LV BCS State	Notes
+# BCS ID = the decimal constant wired into the TU_SetParameter ("SET") node in the block diagram, i.e. the TULVIDC_*/TULVIDP_* id. "-" means the parameter is not set through a SET node (it is an input to TU_SetROI / TU_SetTrigger / TU_SetOutPutTrigger, a BCS-internal value, or ours only).
+# Ids decoded from the AXIS-SXR-40-SDK repo's info/labview-sdk-manuals/ "Tucsen相机 Labview开发指南.pdf" 6.1.3/6.1.4 -- the CN guide lists each id with its decimal value; the EN guide's tables are an older, shorter subset. These are LabVIEW-layer ids, NOT the TUCam ids in sdk/inc/TUDefine.h; TULV_API.dll translates between them.
+# NB: the SAVE node reads 771 (TULVIDC_TRIGGERSAVE) in the Initialize screenshot. 772 is its sibling TULVIDC_TRIGGERBUFSAVE, which appears in no screenshot -- if a colleague's notes say 772, they may be looking at a different VI revision. Worth reconciling.
+# Source: labview-screenshots/*.png (in this folder) -- ALL SEVEN cases (Initialize, Init Single Shot, Start Single Shot, Get Single Shot Status, Get Single Shot Data, Get Freerun Status, Shutdown). Updated 2026-08-05.
+# ==== SECTION 1: SET BY BCS IN "Initialize" ====
+532	Resolution	Sensor readout mode 4096/2048/1024 (TUIDC_RESOLUTION)	AXIS_BIN_MODE	BinMode	BinMode_RBV	YES	Initialize: SET id 532 TULVIDC_RESOLUTION	Resolution selector, not the binning capabilities. Choices built at runtime from Capa_GetAttr.
+301	Gain Type	Global gain / gain-mode index 0..5 (TUIDP_GLOBALGAIN)	ADGain	Gain	Gain_RBV	YES	Initialize: SET id 301 TULVIDP_GLOBGAIN	Index not multiplier: 0 HDR, 1 High, 2 Low, 3-5 Raw. Ours defaults VAL=1.0 and autosaves; saved value is currently 1 = High gain. Match to the BCS config file. NB TULVIDP_GAINMODE (303) is a separate id BCS does not use.
+774	Fan On?	Fan gear / grade (TUIDC_FAN_GEAR)	AXIS_FAN_GEAR	FanGear	FanGear_RBV	YES	Initialize: SET id 774 TULVIDC_FAN	TULVIDC_FAN is a gear (风扇档位), same semantics as ours. BCS narrows it to a boolean in its own cluster only.
+802	Thermoelectric Cooler?	TEC cooling on/off (TUIDC_ENABLETEC)	AXIS_TEC_ENABLE	TECEnable	TECEnable_RBV	YES	Initialize: SET id 802 TULVIDC_TECENABLE	Vendor doc marks ENABLETEC (0x3B) NOT supported on 4040/4040BSI; our path has never run against the camera. BCS writing it is not evidence it works.
+537	Defect Pixel Correction	MISLABELLED IN BCS - id 537 is noise-reduction level	AXIS_NOISE_LEVEL	NoiseLevel	NoiseLevel_RBV	YES	Initialize: SET id 537 TULVIDC_NOISELEVEL	*** LABEL MISMATCH. No defect-pixel id exists anywhere in the LabVIEW id space. BCS has been setting denoise strength. Our equivalent is NoiseLevel (TUIDP_NOISELEVEL, 0..3), NOT DefectCorrection.
+771	Save on trigger	SDK-side auto-save of images to disk	-	-	-	NO (by design)	Initialize: SET id 771 TULVIDC_TRIGGERSAVE <- 0	BCS turns this OFF ("Don't save file"). LabVIEW-SDK-only feature (siblings SAVEFRAME 768, IMGFORMAT 769, IMGCOUNT 770, TRIGGERBUFSAVE 772, IMGSAVEPATH 547). File writing here is the NDFile TIFF/HDF5 plugins. Not a gap.
+-	Use ROI?	Enable/disable ROI mode (TUCAM_ROI_ATTR.bEnable)	-	-	-	NO	Initialize + Get Freerun Status: TU_SetROI 6th input (0 OFF / 1 ON)	*** ONLY REAL GAP. setROI() hardcodes bEnable=true. Full-frame + enabled SHOULD equal disabled but is untested. Fix: set bEnable only when region < MaxSizeX/Y.
+-	Start X	ROI horizontal offset	ADMinX	MinX	MinX_RBV	YES	Initialize + Get Freerun Status: TU_SetROI StartX	Ours aligns down to a multiple of 4.
+-	Width	ROI width	ADSizeX	SizeX	SizeX_RBV	YES	Initialize + Get Freerun Status: TU_SetROI Width	Ours aligns down to a multiple of 8 (measured; vendor doc says 4 and is wrong).
+-	Start Y	ROI vertical offset	ADMinY	MinY	MinY_RBV	YES	Initialize + Get Freerun Status: TU_SetROI StartY	Ours aligns down to a multiple of 4.
+-	Height	ROI height	ADSizeY	SizeY	SizeY_RBV	YES	Initialize + Get Freerun Status + Init Single Shot: TU_SetROI Height	Also used in Init Single Shot to compute readout time - see "Shutter pulse delay".
+-	Trigger	Capture mode: sequence/standard/sync/global/software	ADTriggerMode	TriggerMode	TriggerMode_RBV	YES	Initialize: TU_SetTrigger CaptureMode	TULVCM_* 0..4 numbering is identical to ours: Free Run(0) Standard(1) Synchronous(2) Global(3) Software(4).
+-	Trigger exposure mode	Use exposure time vs level width	AXIS_TRIG_EXP	TriggerExposure	TriggerExposure_RBV	YES	Initialize: TU_SetTrigger ExpourseMode = "Timed"	TULVTE_EXPTM(0) == our "Trigger"(0); TULVTE_WIDTH(1) == our "Gate"(1).
+-	Trigger frame count	Frames per trigger	-	-	-	NO (hardcoded 1)	Initialize: TU_SetTrigger Frame = 1	Ours hardcodes nFrames=1 in setTrigger(). Matches BCS, so not a gap.
+-	Camera Number	Which camera to open	-	-	-	n/a (ctor arg)	Initialize: TU_OpenCamera index 1; passed to every other case	Ours is the cameraId argument to axisSXR40Config in st.cmd, fixed at IOC start.
+-	Start capture	Begin acquisition / allocate buffers	ADAcquire	Acquire	Acquire_RBV	YES	Initialize + Get Freerun Status: TU_StartCapture.vi	
+# ==== SECTION 2: SET BY BCS IN "Init Single Shot" ====
+256 (enum CAMERA_EXPTM)	Exposure time	Exposure in seconds (TUIDP_EXPOSURETM, ms in SDK)	ADAcquireTime	AcquireTime	AcquireTime_RBV	YES	Init Single Shot: SET enum CAMERA_EXPTM <- (exposure_ms + readout_ms)	*** BEHAVIOURAL DIFFERENCE. Wired as a named enum, not a numeric constant; TULVIDP_EXPTM = 256. BCS does NOT write the requested exposure: it writes Timing.Exposure(sec)*1000 + rows*0.01032 ms, i.e. requested exposure PLUS full sensor readout time. We write AcquireTime through unchanged. A BCS 100 ms single shot programs the camera for 100 + 42.3 = 142.3 ms at full frame. Resolve before comparing images or timings.
+770	Image count	Number of images per acquisition	ADNumImages / ADImageMode	NumImages / ImageMode	NumImages_RBV / ImageMode_RBV	YES	Init Single Shot: SET id 770 TULVIDC_IMGCOUNT <- 1	BCS labels the node "image count". Our equivalent for a single shot is ImageMode=Single (NumImages=1).
+-	Time per line	Sensor row readout time, 0.01032 ms	-	-	-	n/a (constant)	Init Single Shot: constant 0.01032 (msec)	CONFIRMS our documented 10.32 us row time / exposure step exactly. Hardcoded in BCS as a literal.
+-	Row count for timing	rows = Use ROI? ? Height : 4096	-	-	-	n/a (derived)	Init Single Shot: Select(Height, 4096) on Use ROI?	Feeds readout_ms = rows * 0.01032.
+-	Shutter Time (msec)	Mechanical shutter open time, drives the Out-3 pulse width	AXIS_TRGOUT3_WIDTH	TriggerOut3Width	TriggerOut3Width_RBV	PARTLY	Init Single Shot: cluster element -> OutWidth = ShutterTime*1000 us	We have the underlying pulse-width PV but no "shutter time" abstraction: an operator sets microsecond-scale seconds directly. Consider a soft record if beamline staff expect msec.
+-	Shutter pulse delay	Delay of the Out-3 pulse	AXIS_TRGOUT3_DLY	TriggerOut3Delay	TriggerOut3Delay_RBV	PARTLY	Init Single Shot: DelayTime = max(0, readout_ms - ShutterTime_ms)*1000 us	BCS COMPUTES this; we expose it as a raw number with no computation. VI comment reads "Don't allow negative delays" (the max(0,..) guard). Operand order of the subtraction inferred from wire topology - confirm in the VI before reimplementing.
+-	CCD Camera Shutter Inhibit	Beamline-global interlock that suppresses the shutter output	-	-	-	NO	Init Single Shot: Get Boolean State Variable, ANDed with "Output for shutter?"	*** NO EPICS EQUIVALENT. An external BCS state variable can veto the shutter pulse. If the shutter output matters operationally, EPICS needs an equivalent interlock input or the veto is silently lost when running from the IOC.
+-	Output for shutter? (Out 3)	Enable the trigger-out pulse on port 3	AXIS_TRGOUT3_MODE	TriggerOut3Mode	TriggerOut3Mode_RBV	YES	Initialize + Init Single Shot: OutMode = 0 if wanted, 3 if not	*** RESOLVED, AND THE NUMBERS ARE INVERTED vs OURS. Shutdown proves 3 = off ("Turn off output pluse on Out 3"), so BCS's enum is 0=active, 3=off. Raw TUCAM_OUTPUTTRG_KIND is the opposite: TUOPT_GND=0 (idle low), TUOPT_EXPSTART=3. TULV_API.dll therefore remaps OutMode. DO NOT copy BCS's numbers into TriggerOut3Mode: ours are raw TUOPT_*, so "off" = 0 (Low) and an active shutter pulse = 3 (Exposure Start) or 4 (Exposure Global). Verify with a scope on Out 3.
+-	Trigger-out port	Which output port	-	-	-	n/a (implicit)	Initialize + Init Single Shot + Shutdown: OutPort = 2	TUPORT_THREE=0x02, matching the cluster label "On Out 3". Our ports are numbered 1/2/3 in PV names, the SDK's 0/1/2.
+# ==== SECTION 3: "Start Single Shot" / "Get Single Shot Status" / "Get Single Shot Data" ====
+768	Software trigger	Fire one frame	AXIS_TRIG_SOFT	SoftwareTrigger	-	YES	Start Single Shot: SET id 768 <- 1, only if Trigger == Software	BCS labels this node "software trigger"; the CN guide calls id 768 TULVIDC_SAVEFRAME ("save picture state"). Given TRIGGERSAVE(771)=0 was set at init, the coherent reading is SAVEFRAME=1 grabs a frame and TRIGGERSAVE decides whether it is written to disk. Ours is unambiguous: TUCAM_Cap_DoSoftwareTrigger, verified working.
+-	Wait for frame	Block until the frame arrives	-	-	-	YES (equivalent)	Get Single Shot Status: TU_WaitForFrame with timeout 1	Ours is imageGrabTask + TUCAM_Buf_WaitForFrame. BCS polls this case from its scan engine instead.
+-	Instrument Done	Acquisition-complete flag	ADStatus / ADAcquire	-	DetectorState_RBV / Acquire_RBV	YES	Get Single Shot Status: output cluster	BCS framework flag; areaDetector equivalent is Acquire_RBV going to 0 / DetectorState_RBV.
+-	Scan Error	Error flag	ADStatusMessage	-	StatusMessage_RBV	YES	Get Single Shot Status: output cluster (F)	
+-	Acquire Aborted	Abort flag	-	-	-	PARTLY	Get Single Shot Status: output cluster	No dedicated abort PV; a stopped acquisition shows as Acquire_RBV=0 with an ADStatus of Aborted.
+-	2D Data	The image array	NDArrayData	-	image1:ArrayData	YES	Get Single Shot Data: TU_GetFrame(0,0,0) -> 2D Data	BCS writes it into an "instrument system global"; we push an NDArray to the plugin chain.
+# ==== SECTION 4: "Get Freerun Status" ====
+326	Temperature readback	Sensor temperature in real degrees C	ADTemperatureActual	-	TemperatureActual	YES	Get Freerun Status: GET id 326 TULVIDP_TEMPERATURE, then 1.7*x+15	*** INDEPENDENT CONFIRMATION, NO ACTION NEEDED. BCS applies exactly the calibration our driver applies (AXIS_TEMP_CAL_SLOPE 1.7 / OFFSET 15.0, axisSXR40.cpp:1374, from AXIS test report p10). Two independent codebases agree, which retires any doubt about the readback scale. Says nothing about the SETPOINT scale, still the unresolved +50 asymmetry.
+-	Live ROI re-apply	Apply ROI changes during a running acquisition	ADMinX/MinY/SizeX/SizeY	MinX / MinY / SizeX / SizeY	*_RBV	PARTLY	Get Freerun Status: on change -> STOP, DELAY 1000 ms, TU_SetROI, TU_GetTrigger, TU_StartCapture	*** BEHAVIOURAL DIFFERENCE. BCS detects a changed parameter cluster, then stops capture, waits a full second, re-applies ROI and restarts. Our writeInt32 calls setROI() immediately with no stop/restart and no settling delay. If mid-acquisition ROI changes are used at the beamline, verify ours does not corrupt frames - the 1 s delay looks like it was added for a reason.
+-	Parameters-changed detect	Compare cluster against last applied values	-	-	-	n/a	Get Freerun Status: Cluster (strict) compare over "Height","Start X","Start Y","Use ROI?","Width"	Only these five are watched for live change. EPICS gets this for free - each PV write is its own event.
+# ==== SECTION 5: "Shutdown" ====
+-	Trigger-out off	Idle the Out-3 pulse before closing	AXIS_TRGOUT3_MODE	TriggerOut3Mode	TriggerOut3Mode_RBV	NO (not done on exit)	Shutdown: TU_SetOutPutTrigger OutPort=2 OutMode=3 ("Turn off output pluse on Out 3")	*** WORTH ADOPTING. BCS explicitly parks the shutter output before disconnecting. Our disconnectCamera() stops capture but leaves nTgrOutMode as-is, so a shutter output could keep pulsing or stay asserted after the IOC exits. Cheap and safe to add.
+-	Stop capture	End acquisition	ADAcquire	Acquire	Acquire_RBV	YES	Shutdown + Get Freerun Status: TU_StopCapture.vi	Ours: stopCapture(), also called from disconnectCamera().
+-	Uninitialise API	Release all camera resources	-	-	-	YES (equivalent)	Shutdown: TU_UninitCamera.vi(1)	Ours: TUCAM_Dev_Close + TUCAM_Api_Uninit in disconnectCamera().
+# ==== SECTION 6: IN OUR DRIVER, NOT TOUCHED BY BCS IN ANY CASE ====
+-	Temperature setpoint	TEC setpoint (TUIDP_TEMPERATURE, write scale)	ADTemperature	Temperature	Temperature_RBV	YES	never set	BCS only READS temperature (section 4) - it never writes a setpoint, so it offers no evidence either way on our +50 write offset. That asymmetry remains open. TULVIDP_TEMPERATURETARGET (327) exists and BCS ignores it.
+-	Trigger edge	Rising/falling trigger-in edge	AXIS_TRIG_EDGE	TriggerEdge	TriggerEdge_RBV	YES	never set (default)	TULVTD_RISING=0x01, TULVTD_FAILING=0x00.
+-	Trigger delay	Delay after trigger before exposure	AXIS_TRIG_DLY	TriggerDelay	TriggerDelay_RBV	YES	never set	
+-	Trigger-out 3 edge	Edge of the port-3 output pulse	AXIS_TRGOUT3_EDGE	TriggerOut3Edge	TriggerOut3Edge_RBV	YES	never set (default)	BCS leaves EdgeMode unwired in every case.
+-	Trigger-out 1 (Mode/Edge/Delay/Width)	Trigger output port 1	AXIS_TRGOUT1_*	TriggerOut1Mode/Edge/Delay/Width	*_RBV	YES	never set	BCS uses port 3 only.
+-	Trigger-out 2 (Mode/Edge/Delay/Width)	Trigger output port 2	AXIS_TRGOUT2_*	TriggerOut2Mode/Edge/Delay/Width	*_RBV	YES	never set	BCS uses port 3 only.
+-	Trigger Ready out mode	TUOPT_TRIREADY = 0x06	AXIS_TRGOUT*_MODE	TriggerOut1/2/3Mode	*_RBV	NO (choice missing)	never set	MINOR GAP: our mbbo stops at Readout End(5); the SDK also defines TUOPT_TRIREADY(6). mbbo has 16 slots - add SXST/SXVL if wanted.
+-	Bit depth	Sensor bit depth (TUIDC_BITOFDEPTH)	AXIS_BIT_DEPTH	BitDepth	BitDepth_RBV	YES	never set	Fixed at 16 on this camera, not adjustable. LabVIEW id would be TULVIDC_DEPTH (522).
+-	Frame speed	Pixel clock / readout speed (TUIDC_PIXELCLOCK)	AXIS_FRAME_SPEED	FrameSpeed	FrameSpeed_RBV	YES	never set	
+-	Frame format	Output frame format (TUFRM_FORMATS)	AXIS_FRAME_FORMAT	FrameFormat	FrameFormat_RBV	YES	never set	
+-	Gain mode (CMS/HDR)	Image mode select (TUIDC_IMGMODESELECT)	AXIS_IMG_MODE	GainMode	GainMode_RBV	YES	never set	MISLEADING PV NAME - this is not gain. Returns NOT_SUPPORT on this camera. LabVIEW id would be TULVIDC_IMGMODESELECT (542).
+-	Auto exposure	Automatic exposure (TUIDC_ATEXPOSURE)	AXIS_AUTO_EXPOSURE	AutoExposure	AutoExposure_RBV	YES	never set	Returns NOT_SUPPORT on this camera. LabVIEW id would be TULCIDC_AUTOEXP (517).
+-	Auto levels	Automatic colour scale, 4-state (TUIDC_ATLEVELS)	AXIS_AUTO_LEVELS	AutoLevels	AutoLevels_RBV	YES	never set	Returns NO_RESOURCE unless histogram is on; our driver forces TUIDC_HISTC for states 1-3. LabVIEW id would be TULVIDC_AUTOLEVEL (527).
+-	Histogram	Histogram statistics (TUIDC_HISTC)	AXIS_HISTOGRAM	Histogram	Histogram_RBV	YES	never set	Returns NO_RESOURCE; value applies anyway.
+-	Enhance	Image enhancement (TUIDC_ENHANCE)	AXIS_ENHANCE	Enhance	Enhance_RBV	YES	never set	Returns NOT_SUPPORT on this camera.
+-	Defect correction	Defect pixel correction (TUIDC_DFTCORRECTION)	AXIS_DEFECT_CORR	DefectCorrection	DefectCorrection_RBV	YES	NEVER USED BY BCS	Returns NOT_SUPPORT on this camera and corresponds to NO id in the LabVIEW space. BCS's control labelled "Defect Pixel Correction" sets denoise (537) instead - see section 1.
+-	Enable denoise	Denoise enable (TUIDC_ENABLEDENOISE)	AXIS_ENABLE_DENOISE	EnableDenoise	EnableDenoise_RBV	YES	possibly implied by id 537	TULVIDC_NOISELEVEL (537) may map to this capability rather than to TUIDP_NOISELEVEL. Either way it is denoise, and we expose both.
+-	Flat correction	Flat-field correction (TUIDC_FLTCORRECTION)	AXIS_FLAT_CORR	FlatCorrection	FlatCorrection_RBV	YES	never set	Returns NO_RESOURCE; value applies anyway. The LabVIEW SDK has TU_SetShadingFrame for the reference frame; we have no equivalent.
+-	Dynamic range correction	TUIDC_DRCORRECTION	AXIS_DYN_RGE_CORR	DynRgeCorrection	DynRgeCorrection_RBV	YES	never set	Reserved in the SDK header.
+-	Brightness	TUIDP_BRIGHTNESS	AXIS_BRIGHTNESS	Brightness	Brightness_RBV	YES	never set	Not supported on this camera. LabVIEW id would be TULVIDP_BRIGHTNESS (257).
+-	Black level	TUIDP_BLACKLEVEL	AXIS_BLACK_LEVEL	BlackLevel	BlackLevel_RBV	YES	never set	NOT supported on this camera; black level is only reachable via vendor properties. LabVIEW id would be TULVIDP_BLACKLEVEL (302).
+-	Sharpness	TUIDP_SHARPNESS	AXIS_SHARPNESS	Sharpness	Sharpness_RBV	YES	never set	Not supported on this camera. LabVIEW id would be TULVIDP_SHARPNESS (306).
+-	HDR K value	TUIDP_HDR_KVALUE	AXIS_HDRK	HDRK	HDRK_RBV	YES	never set	Not supported on this camera.
+-	Gamma	TUIDP_GAMMA	AXIS_GAMMA	Gamma	Gamma_RBV	YES	never set	Supported, range 1..255, default 100. LabVIEW id would be TULVIDP_GAMMA (281).
+-	Contrast	TUIDP_CONTRAST	AXIS_CONTRAST	Contrast	Contrast_RBV	YES	never set	Supported, range 0..255, default 128. LabVIEW id would be TULVIDP_CONTRAST (286).
+-	Left levels	TUIDP_LFTLEVELS	AXIS_LEFT_LEVELS	LeftLevels	LeftLevels_RBV	YES	never set	Supported, range 0..65534. LabVIEW id would be TULVIDP_LFTLEVEL (291).
+-	Right levels	TUIDP_RGTLEVELS	AXIS_RIGHT_LEVELS	RightLevels	RightLevels_RBV	YES	never set	Supported, range 1..65535. LabVIEW id would be TULVIDP_RGTLEVEL (296).
+-	Reverse X	Horizontal flip (TUIDC_HORIZONTAL)	ADReverseX	ReverseX	ReverseX_RBV	YES	never set	
+-	Reverse Y	Vertical flip (TUIDC_VERTICAL)	ADReverseY	ReverseY	ReverseY_RBV	YES	never set	Returns NO_RESOURCE on this camera.
+-	Colour mode	Mono/colour NDArray format	-	ColorMode	ColorMode_RBV	YES	n/a	Mono only on this sensor.
+-	Bus type	USB2.0/USB3.0 (TUIDI_BUS)	AXIS_BUS	-	Bus_RBV	YES	n/a	Read-only. LabVIEW equivalent is TULVIDI_USB (4) via TU_GetCameraInfo; BCS does not read it.
+-	Product ID	USB product id (TUIDI_PRODUCT)	AXIS_PRODUCT_ID	-	ProductID_RBV	YES	n/a	Read-only. E41B = XFXV variant.
+-	Transfer rate	Measured USB throughput (TUIDI_TRANSFER_RATE)	AXIS_TRANSFER_RATE	-	TransferRate_RBV	YES	n/a	Read-only, polled by statusTask.
+-	Buffer frames in use	SDK ring occupancy (TUIDI_CURRENTBUFFRAMES)	AXIS_BUFF_FRAMES	-	BuffFrames_RBV	YES	n/a	Saturated at full frame - do not use as an early warning there.
+-	Buffer frames total	SDK ring depth (TUIDI_TOTALBUFFRAMES)	AXIS_BUFF_TOTAL	-	BuffTotal_RBV	YES	n/a	Depth is 2 and not adjustable.
+-	Max size X/Y	Sensor dimensions (TUIDI_CURRENT_WIDTH/HEIGHT)	ADMaxSizeX / ADMaxSizeY	-	MaxSizeX_RBV / MaxSizeY_RBV	YES	n/a	4096 x 4096. BCS hardcodes the literal 4096 in Init Single Shot instead of querying.
+-	Serial number	Camera serial via register read	ADSerialNumber	-	SerialNumber_RBV	YES	n/a	LabVIEW equivalent is TULVIDI_SN (2).
+-	Model / firmware / SDK version	Identity strings	ADModel / ADFirmwareVersion / ADSDKVersion	-	Model_RBV / FirmwareVersion_RBV / SDKVersion_RBV	YES	n/a	Reports as "Dhyana XF/XV4040BSI"; the SDK never says "AXIS". LabVIEW: TULVIDI_NAME (1) / TULVIDI_FS (3) / TULVIDI_SDKNO (5).
+# ==== SECTION 7: IN THE LABVIEW SDK, IN NEITHER BCS NOR OUR DRIVER ====
+832, 833	Video recording	TU_StartRecorder / TU_StopRecorder, configured by RECORDCOMPRESS/RECORDCONFIG	-	-	-	NO	not used	Out of scope; use NDFileHDF5 streaming.
+-	Multi-stream capture	TU_StartMultiData / TU_StopMultiData	-	-	-	NO	not used	
+-	Shading/flat-field reference frame	TU_SetShadingFrame	-	-	-	NO	not used	Would be needed to make FlatCorrection actually usable.
+-	Frame index readback	TU_GetFrameIndex	-	-	-	NO	not used	areaDetector equivalent is ArrayCounter / NDArray uniqueId.
+-	Image file loading	TU_OpenImageFile	-	-	-	NO	not used	
+547, 548	Image save path / name	TULVIDC_IMGSAVEPATH / TULVIDC_IMGNAME	-	-	-	NO	not used	SDK-side file writing; ours is the NDFile plugins.
+769	Image save format	TULVIDC_IMGFORMAT (RAW/TIF/PNG/JPG/BMP)	-	-	-	NO	not used	Ours is NDFileTIFF / NDFileHDF5.
+552	LED control	TULVIDC_LEDENBALE / TUIDC_ENABLELED	-	-	-	NO	not used	
+779, 784	PGA high / PGA low gain	TULVIDC_PGAHIGH / TULVIDC_PGALOW	-	-	-	NO	not used	TUIDC_PGAHIGH/PGALOW exist in TUDefine.h; not probed by our capability audit.
+789, 794	Pixel clock 1/2 enable	TULVIDC_PIXCLK1_EN / PIXCLK2_EN	-	-	-	NO	not used	
+796-801	Rolling scan mode/delay/slit/dir/reset/interval	TULVIDC_ROLLINGSCAN*	-	-	-	NO	not used	Listed as unavailable on this camera in ../dhyana-xfxv4040bsi.md.
+565	Shutter mode	TULVIDC_SHUTTER / TUIDC_SHUTTER	-	-	-	NO	not used	Distinct from the shutter trigger-out on port 3 that BCS does use.
+558	Test image mode	TULVIDC_TESTIMGMODE	-	-	-	NO	not used	Test-pattern generator unavailable on this camera.
+559	Sensor reset	TULVIDC_SENSORRESET	-	-	-	NO	not used	
+809	Signal filter	TULVIDC_SIGNALFILTER	-	-	-	NO	not used	Trigger input filtering.
+807, 808	Acquisition / display frame rate	TULVIDC_CAMACQFPS / CAMSHOWFPS	-	-	-	NO	not used	
+321	Frame rate property	TULVIDP_FRAMERATE -> TUIDP_FRAME_RATE	-	-	-	NO	not used	MOOT: TUIDP_FRAME_RATE is not supported on this camera.
+327	Temperature target	TULVIDP_TEMPERATURETARGET -> TUIDP_TEMPERATURE_TARGET (0x2B)	-	-	-	NO	not used	WORTH A LOOK: this id IS supported on this camera (range 0..100, default 30) and may resolve the +50 setpoint asymmetry in our ADTemperature path.
+803	Start capture count	TULVIDC_CAMSTART	-	-	-	NO	not used	Frame count for a Start; ours is NumImages.
+804-806	Trigger stop / count / index	TULVIDC_CAMTRISTOP / CAMTRICNT / CAMTRIIDX	-	-	-	NO	not used	
+848-857	Trigger-out capability probes	TULVIDC_OUTPUTTRI*EN / OUTPUTTRIPORT / OUTPUTTRIKIND	-	-	-	NO	not used	These query which trigger-out features the camera supports. OUTPUTTRIKIND (857) is likely how TULV builds its remapped OutMode list - see the "Output for shutter?" row.
+864-868	Trigger-in capability probes	TULVIDC_TRIIN*	-	-	-	NO	not used	Ours probes support by calling getTriggerOut() per port at connect.
+-	Auto-level percentage	TUIDP_ATLEVEL_PERCENTAGE (0x2A)	-	-	-	NO	n/a	Supported on this camera per our probe; no LabVIEW id and no EPICS exposure.

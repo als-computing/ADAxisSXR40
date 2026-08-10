@@ -1,0 +1,366 @@
+================================================================================
+LabVIEW "Axis Photonique BCS Driver.vi" -- parameter inventory
+Cross-check list for ADAxisSXR40 (EPICS areaDetector)
+================================================================================
+
+Source      : labview-screenshots/*.png (in this folder) -- ALL SEVEN cases of the VI
+              (Initialize, Init Single Shot, Start Single Shot,
+               Get Single Shot Status, Get Single Shot Data,
+               Get Freerun Status, Shutdown)
+NOTE        : the machine-readable version of this audit, with one row per
+              parameter and an Exists? column, is
+              labview-bcs-vs-epics-audit.tsv (same folder) -- use that for the
+              cross-check. This file is the narrative companion. For the
+              prioritised "what should I actually worry about" summary, see
+              RISKS.md.
+Decoded with: the AXIS-SXR-40-SDK repo's info/labview-sdk-manuals/  (Tucsen LabVIEW SDK 2.1.10.0)
+              "Tucsen相机 Labview开发指南.pdf"  section 6.1.3 / 6.1.4
+              -- the Chinese guide lists every id with its DECIMAL value, which
+              is what the block-diagram constants are. The EN guide's tables are
+              an older, shorter subset and are missing several of these ids.
+Transcribed : 2026-08-05
+
+BOTTOM LINE: no camera capability is out of reach -- every parameter BCS writes,
+ADAxisSXR40 can write. The differences are orchestration and policy, not missing
+access: see section 6, and RISKS.md for which of them actually matter.
+
+SCOPE
+-----
+All seven cases of the case selector are now covered, so this is a complete
+inventory of the VI. (An earlier revision of this file covered only the
+"Initialize" frame and warned that exposure time was set somewhere unseen -- it
+is set in "Init Single Shot", and not in the way we set ours. See 6.5.)
+
+The only remaining unknowns are inside subVIs rather than cases: the exact
+operand order of the shutter-delay subtraction, and what raw TUOPT_* value the
+LabVIEW OutMode enum maps to.
+
+
+================================================================================
+1. THE ID CONSTANTS, DECODED
+================================================================================
+
+The numeric constants wired into each SET node are LabVIEW-specific ids
+(TULVIDC_* capabilities / TULVIDP_* properties), NOT the TUCam ids our driver
+uses. TULV_API.dll translates them. That is why none of them appears in
+sdk/inc/TUDefine.h -- it is a separate, remapped id space, mostly on a stride of
+5. Full mapping of what the screenshot sets:
+
+ Label   Dec   Hex     LabVIEW id                Means
+ -----   ---   -----   ----------------------    --------------------------------
+ SAVE    771   0x0303  TULVIDC_TRIGGERSAVE       save-image-on-trigger state
+ Res     532   0x0214  TULVIDC_RESOLUTION        resolution (分辨率)
+ Fan     774   0x0306  TULVIDC_FAN               fan GEAR / grade (风扇档位)
+ TEC     802   0x0322  TULVIDC_TECENABLE         cooling on/off (制冷开关)
+ Gain    301   0x012D  TULVIDP_GLOBGAIN          global gain (全局增益)
+ DPC     537   0x0219  TULVIDC_NOISELEVEL        noise-reduction level (降噪等级)
+                                                 *** LABEL MISMATCH -- see 6.2
+
+Note TULVIDP_GAINMODE = 0x012F (dec 303) exists as a SEPARATE id from GLOBGAIN
+(dec 301). BCS uses 301, global gain. So our ADGain/Gain PV is the correct
+analogue, and our GainMode PV (TUIDC_IMGMODESELECT) is a third, unrelated thing.
+
+
+================================================================================
+2. CAMERA / ACQUISITION PARAMETERS
+================================================================================
+
+From the cluster "Axis Photonique Scan Parameters", loaded from the config file
+"Axis Photonique Scan Setup.txt" (section 5).
+
+LabVIEW parameter              Our PV (AXIS:SXR40:cam1:)         Status
+-----------------------------  -------------------------------   ------
+Resolution                     BinMode / BinMode_RBV              [OK]
+    TULVIDC_RESOLUTION -> TUIDC_RESOLUTION. The 4096/2048/1024 selector, not
+    the binning capabilities. Same as ours.
+
+Gain Type                      Gain / Gain_RBV                    [~]
+    TULVIDP_GLOBGAIN -> TUIDP_GLOBALGAIN, index 0..5 (0 HDR, 1 High, 2 Low,
+    3..5 Raw). CAVEAT: ours is standard ADGain, default VAL=1.0, autosaved --
+    the saved value is currently 1, i.e. "High gain". Match it to whatever the
+    BCS config file uses.
+
+Trigger                        TriggerMode / TriggerMode_RBV      [OK]
+    Via TU_SetTrigger, not a SET node. Section 3.
+
+Fan On?                        FanGear / FanGear_RBV              [OK]
+    TULVIDC_FAN is a GEAR (风扇档位), not a boolean -- same semantics as our
+    mbbo with runtime-built choices. BCS narrows it to a boolean in its own
+    cluster; the underlying id is identical. (Corrects an earlier reading of
+    this line: it is not a boolean/gear mismatch.)
+
+Thermoelectric Cooler?         TECEnable / TECEnable_RBV          [~]
+    TULVIDC_TECENABLE -> TUIDC_ENABLETEC. CAVEAT: implemented in ours
+    (axisSXR40.cpp:~1215) but the vendor's
+    Dhyana_Series_Properties_and_Capabilities marks ENABLETEC (0x3B) NOT
+    supported on 4040/4040BSI, and our path has never run against the camera.
+    BCS writing it is not evidence it works -- see 6.3.
+
+Use ROI?                       -- (we hardcode ROI enabled)       [!!]
+    TU_SetROI's 6th input, "SetROI: 0 OFF / 1 ON". THE ONE REAL DIFFERENCE.
+    See 6.1.
+
+Output for shutter? (On Out 3) TriggerOut3Mode/Delay/Width        [!!]
+    Section 3. LabVIEW OutPort=2 is the third port = our TriggerOut3*. The
+    mode numbering is inverted vs ours and the pulse timing is computed by
+    BCS rather than entered -- see 6.4, 6.6 and 6.7.
+
+Defect Pixel Correction        NoiseLevel  (NOT DefectCorrection) [!!]
+    id 537 is TULVIDC_NOISELEVEL, noise-reduction level. The BCS label is
+    wrong. See 6.2.
+
+Start X                        MinX          (ADBase)             [OK]
+Width                          SizeX         (ADBase)             [OK]
+Start Y                        MinY          (ADBase)             [OK]
+Height                         SizeY         (ADBase)             [OK]
+    TU_SetROI -> TUCAM_Cap_SetROI. Ours in setROI(), axisSXR40.cpp:~2050.
+
+Camera Number                  -- (ctor arg)                      [--]
+    Ours is the cameraId argument to axisSXR40Config in st.cmd, fixed at IOC
+    start. Not runtime-settable, and should not be.
+
+SAVE (value 0)                 -- (NDFile plugins)                [--]
+    TULVIDC_TRIGGERSAVE = 0, commented "Don't save file". Turns OFF the
+    LabVIEW SDK's own save-image-on-trigger path. We never had that path;
+    file writing is the NDFile TIFF/HDF5 plugins. Nothing to implement.
+
+
+================================================================================
+3. TRIGGER PARAMETERS
+================================================================================
+
+TU_SetTrigger.vi inputs: CameraIndex, CaptureMode, ExpourseMode, EdgeMode,
+                         DelayTime, Frame
+
+LabVIEW                        Our PV                             Status
+-----------------------------  -------------------------------    ------
+CaptureMode (from cluster)     TriggerMode / TriggerMode_RBV       [OK]
+    TULVCM_* 0..4 == our Free Run(0) Standard(1) Synchronous(2) Global(3)
+    Software(4). Identical numbering -- confirmed against guide 6.1.5.
+ExpourseMode = "Timed"         TriggerExposure                     [OK]
+    TULVTE_EXPTM(0) == our "Trigger"(0). TULVTE_WIDTH(1) == our "Gate"(1).
+EdgeMode (not set)             TriggerEdge / TriggerEdge_RBV       [--]
+    TULVTD_RISING=0x01, TULVTD_FAILING=0x00. We expose it; BCS leaves default.
+DelayTime (not set)            TriggerDelay / TriggerDelay_RBV     [--]
+Frame = 1                      -- (nFrames hardcoded 1)            [OK]
+    ours: setTrigger(), axisSXR40.cpp:1946. Matches.
+
+TU_SetOutPutTrigger.vi inputs: CameraIndex, OutPort, OutMode, EdgeMode,
+                               DelayTime, OutWidth
+
+LabVIEW                        Our PV                             Status
+-----------------------------  -------------------------------    ------
+OutPort = 2                    (selects TriggerOut3*)              [OK]
+    Guide: "the output port mode is Port1, Port2 and Port3". 0-based, so
+    2 = Port3, matching the cluster label "On Out 3".
+DelayTime = 0                  TriggerOut3Delay = 0                [OK]
+OutWidth = 5000                TriggerOut3Width = 0.005            [~]
+    UNITS TRAP: the SDK field nWidth is microseconds; our record is SECONDS
+    (setTriggerOut does value*1e6). So 5000 us == our 0.005. Do NOT copy 5000
+    into TriggerOut3Width. ASSUMPTION: TULV passes OutWidth straight through
+    to nWidth -- the guide states no unit. Verify on hardware with a scope
+    before trusting the number.
+OutMode = 0 wanted / 3 not     TriggerOut3Mode                     [!!]
+    RESOLVED, and the numbering is INVERTED relative to ours. Both Initialize
+    and Init Single Shot select between 0 (shutter wanted) and 3 (not wanted),
+    and Shutdown sets 3 with the comment "Turn off output pluse on Out 3". So
+    in BCS's enum 0 = active, 3 = off.
+    Raw TUCAM_OUTPUTTRG_KIND is the opposite: TUOPT_GND=0x00 (idle low),
+    TUOPT_EXPSTART=0x03. TULV_API.dll must therefore remap OutMode.
+    CONSEQUENCE: our TriggerOut3Mode carries the RAW TUOPT_* values, so for us
+    "off" is 0 (Low) and an active shutter pulse is 3 (Exposure Start) or
+    4 (Exposure Global). Do not copy BCS's numbers across. Confirm with a
+    scope on Out 3 which of 3 or 4 reproduces the beamline pulse.
+
+
+================================================================================
+4. BCS FRAMEWORK TERMINALS  (all [--] -- no areaDetector equivalent needed)
+================================================================================
+
+  Inputs:   Instrument Status In
+            Instrument Number                    (I16)
+            Specific Instrument Parameters In
+            Instrument Controls In
+            Instrument Commands
+            error in (no error)
+
+  Outputs:  Instrument Status Out
+            error out
+
+  Initialize report cluster (bundled and returned):
+            Initialization Error       = False
+            Scan Parameters are Setup  = True
+            1D Data / 2D Data / 3D Data / 2D X Scale / 2D Y Scale
+
+The data-shape flags are BCS's way of describing the returned array. In
+areaDetector that role is filled by NDArray dimensions plus NDAttributes.
+
+
+================================================================================
+5. INITIALIZE CALL SEQUENCE  (all VIs now identified)
+================================================================================
+
+   1. TU_InitCamera.vi        guarded by "Is First Inst?" == True
+                              ours: TUCAM_Api_Init, in connectCamera()
+   2. TU_OpenCamera.vi        index 1 wired in
+                              ours: TUCAM_Dev_Open
+   3. TU_SetParameter  771    TRIGGERSAVE  <- 0   ("Don't save file")
+   4. TU_SetParameter  532    RESOLUTION
+   5. TU_SetParameter  774    FAN
+   6. TU_SetParameter  802    TECENABLE
+   7. TU_SetParameter  301    GLOBGAIN
+   8. TU_SetParameter  537    NOISELEVEL   (mislabelled "DPC")
+   9. TU_SetOutPutTrigger.vi  OutPort / DelayTime / OutWidth
+  10. TU_SetROI.vi            StartX, StartY, Width, Height, SetROI
+                              <- this was the unidentified node; the input
+                                 signature matches the cluster's ROI elements
+                                 exactly (guide 6.10)
+  11. TU_SetTrigger.vi        "Timed" + Frame=1
+  12. TU_StartCapture.vi      ours: startCapture()
+
+Config file: "Axis Photonique Scan Setup.txt", read by a "Gen Read" subVI inside
+a "No Error" case, parsed in a for-loop into the 12-element cluster.
+ACTION: get a copy. It holds the values the beamline actually runs with -- the
+real reference for whether our defaults match operations. Our equivalent is
+autosave (auto_settings.req + axisSXR40_settings.req + ADBase_settings.req).
+
+
+================================================================================
+6. WHAT THE SCREENSHOT DOES THAT WE DO NOT
+================================================================================
+
+6.1  [!!] ROI enable/disable -- the only genuine functional difference
+     LabVIEW's TU_SetROI takes a SetROI flag (0 OFF, 1 ON), driven by the
+     cluster's "Use ROI?". Our setROI() hardcodes roiAttr.bEnable = true
+     (axisSXR40.cpp, in setROI) and has no way to pass false.
+     Why it probably does not matter: a full-frame region with bEnable=true
+     should be equivalent to bEnable=false. Why it might: the SDK may take a
+     different internal path with ROI disabled, and we have never tested that
+     it is equivalent at full frame.
+     Fix if wanted: set bEnable only when the region is smaller than
+     MaxSizeX/MaxSizeY. Cheap, and removes the doubt.
+
+6.2  [!!] BCS's "DPC" is not defect-pixel correction
+     id 537 = TULVIDC_NOISELEVEL, the noise-reduction level. There is NO
+     defect-pixel-correction id anywhere in the LabVIEW space (searched the
+     full TULVIDC_/TULVIDP_ tables). So:
+       - the parameter BCS actually sets corresponds to our NoiseLevel
+         (TUIDP_NOISELEVEL, supported, range 0..3) and/or EnableDenoise
+         (TUIDC_ENABLEDENOISE) -- both of which we already have;
+       - our DefectCorrection PV (TUIDC_DFTCORRECTION) corresponds to nothing
+         BCS does, and returns NOT_SUPPORT on this camera anyway
+         (axisSXR40.cpp:1745).
+     Consequence: the beamline's "Defect Pixel Correction" setting has been
+     adjusting denoise strength. Worth telling whoever maintains the BCS
+     driver, and worth knowing before anyone tries to reproduce beamline
+     images through EPICS -- set NoiseLevel, not DefectCorrection.
+
+6.3  [--] SDK-side save-on-trigger (TULVIDC_TRIGGERSAVE)
+     BCS explicitly turns this OFF. It is a LabVIEW-SDK feature (with siblings
+     SAVEFRAME 768, IMGFORMAT 769, IMGCOUNT 770, IMGSAVEPATH 547, IMGNAME 548)
+     that has no counterpart in areaDetector, where file writing belongs to
+     the NDFile plugins. Not a gap -- we are being asked to not-do something
+     we never did.
+
+6.4  [!!] OutMode numbering is inverted vs ours -- resolved, see section 3.
+     BCS: 0 = active shutter, 3 = off. Ours: raw TUOPT_*, 0 = Low/off,
+     3 = Exposure Start, 4 = Exposure Global. Never copy the numbers across.
+
+6.5  [!!] Exposure time is INFLATED by the readout time
+     "Init Single Shot" does not program the requested exposure. It computes
+         rows       = Use ROI? ? Height : 4096
+         readout_ms = rows * 0.01032          (0.01032 ms = one sensor row)
+         CAMERA_EXPTM <- Timing.Exposure(sec)*1000 + readout_ms
+     So a 100 ms single shot at full frame programs the camera for
+     100 + 42.3 = 142.3 ms. We write AcquireTime straight through.
+     This is the biggest behavioural difference found, and it matters for any
+     attempt to reproduce beamline exposures or timings through EPICS. Whether
+     it is correct or a workaround is a question for the BCS author -- do not
+     copy it into the driver without knowing which.
+     Incidentally, BCS's hardcoded 0.01032 ms row time CONFIRMS our documented
+     10.32 us exposure step exactly.
+
+6.6  [!!] The shutter pulse timing is COMPUTED by BCS, not entered
+         OutWidth  = ShutterTime_ms * 1000                      (us)
+         DelayTime = max(0, readout_ms - ShutterTime_ms) * 1000  (us)
+     The max(0,..) carries the VI comment "Don't allow negative delays". We
+     expose TriggerOut3Width/Delay as raw numbers with no computation, so an
+     operator has to do this arithmetic by hand. If the shutter is used in
+     anger, consider soft records that compute it. The operand order of the
+     subtraction is inferred from wire topology -- confirm in the VI.
+
+6.7  [!!] "CCD Camera Shutter Inhibit" -- an interlock we have no equivalent for
+     Init Single Shot reads a BCS global boolean state variable and ANDs its
+     negation with "Output for shutter?", so an external condition can veto
+     the shutter pulse. Nothing in our driver can do this. If that veto is
+     protecting anything physical, running the camera from the IOC silently
+     loses it. Worth raising with beamline staff before EPICS takes over.
+
+6.8  [!!] Shutdown parks the trigger output; we do not
+     Shutdown sets OutMode = off on Out 3 BEFORE stopping capture and
+     uninitialising. Our disconnectCamera() stops capture but leaves
+     nTgrOutMode untouched, so a shutter output can stay asserted or keep
+     pulsing after the IOC exits. Cheap to add, and clearly deliberate on
+     BCS's part.
+
+6.9  [~]  Live ROI changes: BCS stops, waits 1 s, re-applies, restarts
+     Get Freerun Status watches five controls ("Height", "Start X", "Start Y",
+     "Use ROI?", "Width") for change and, when one moves, does
+     STOP -> DELAY 1000 ms -> TU_SetROI -> TU_GetTrigger -> TU_StartCapture.
+     Our writeInt32 calls setROI() immediately, mid-acquisition, with no stop
+     and no settling delay. The 1 s delay looks like it was added for a
+     reason. If mid-scan ROI changes happen at the beamline, verify ours does
+     not corrupt frames.
+
+6.10 [OK] Temperature: independent confirmation, nothing to do
+     Get Freerun Status reads id 326 (TULVIDP_TEMPERATURE) and applies
+     "1.7*x+15", labelled "convert to real temperature". That is EXACTLY our
+     AXIS_TEMP_CAL_SLOPE/OFFSET (axisSXR40.cpp:1374), from the AXIS test
+     report p10. Two independent codebases agreeing retires any doubt about
+     the readback scale.
+     It says nothing about the SETPOINT scale: BCS never writes a temperature,
+     so our +50 write offset remains unverified.
+
+Also present in the LabVIEW SDK but never called by this VI, and absent from our
+driver -- listed so the scope is explicit, none of it is required for parity:
+     TU_StartRecorder / TU_StopRecorder    video recording
+     TU_StartMultiData / TU_StopMultiData  multi-stream capture
+     TU_SetShadingFrame                    flat-field / shading reference frame
+     TU_GetFrameIndex                      frame index readback
+     TU_OpenImageFile                      file loading
+     ids: LEDENBALE(552) PGAHIGH(779) PGALOW(784) PIXCLK1_EN(789)
+          PIXCLK2_EN(794) ROLLINGSCAN*(796-801) SHUTTER(565) TESTIMGMODE(558)
+          SENSORRESET(559) SIGNALFILTER(809) CAMACQFPS(807)
+     TULVIDP_FRAMERATE (321) maps to TUIDP_FRAME_RATE, which this camera does
+     NOT support (../dhyana-xfxv4040bsi.md) -- so it is moot for us.
+
+
+================================================================================
+7. TO CHECK, IN PRIORITY ORDER
+================================================================================
+
+  1. [!!] Exposure semantics (6.5). Ask the BCS author why exposure is inflated
+          by the readout time. This changes what "AcquireTime = 0.1" means
+          relative to the beamline, so it outranks everything else here.
+  2. [!!] The shutter output: which raw TUOPT_* value reproduces the beamline
+          pulse, 3 (Exposure Start) or 4 (Exposure Global) (6.4). Scope Out 3.
+  3. [!!] The "CCD Camera Shutter Inhibit" interlock (6.7). If it guards
+          anything physical, EPICS needs an equivalent before it takes over.
+  4. [!!] Park the trigger output on disconnect (6.8). Small, clearly correct.
+  5. [!!] Decide whether to honour a "ROI off" case, i.e. stop hardcoding
+          bEnable = true (6.1).
+  6. [!!] Confirm 6.2 with the BCS maintainer -- is "DPC" meant to be denoise,
+          or did they intend defect correction and pick the wrong id?
+  7. [~]  Live ROI changes: does ours need the stop/delay/restart dance (6.9)?
+  8. [~]  TEC: BCS writes it, vendor docs say unsupported on 4040BSI. Determine
+          whether the write does anything. Ours would fail the same way.
+  9. [~]  Gain: ours autosaves 1 ("High gain"). Match to the BCS config file.
+ 10. [~]  Verify the OutWidth microsecond assumption before copying 5000 across.
+
+Our driver additionally exposes ~30 parameters BCS never touches (BitDepth,
+FrameSpeed, FrameFormat, AutoExposure, AutoLevels, Histogram, Enhance,
+EnableDenoise, FlatCorrection, DynRgeCorrection, Brightness, BlackLevel,
+Sharpness, HDRK, Gamma, Contrast, LeftLevels, RightLevels, TriggerOut1*,
+TriggerOut2*, TransferRate_RBV, BuffFrames_RBV, BuffTotal_RBV, Bus_RBV,
+ProductID_RBV, TemperatureActual, SoftwareTrigger). Feature parity with LabVIEW
+is not the constraint -- correctness of the shared subset is.

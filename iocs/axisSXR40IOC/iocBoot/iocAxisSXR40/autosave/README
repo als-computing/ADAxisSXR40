@@ -1,0 +1,6 @@
+This directory holds the save/restore files that retain settings between IOC
+restarts. commonPlugins.cmd points save_restore here with
+set_savefile_path("./autosave"), so the directory must exist before the IOC
+starts -- save_restore will not create it.
+
+No auto_settings.sav is distributed; it appears the first time the IOC runs.
