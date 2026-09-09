@@ -7,7 +7,7 @@
 #
 # The geometry is this detector's, and it is measured rather than taken from a
 # data sheet: TUIDI_CURRENT_WIDTH and TUIDI_CURRENT_HEIGHT both read 4096, and
-# Buf_Alloc reports uiImgSize = 33554432. See info/dhyana-xfxv4040bsi.md in the
+# Buf_Alloc reports uiImgSize = 33554432. See info/camera/dhyana-xfxv4040bsi.md in the
 # DISCO support repository.
 #
 #   full frame   4096 x 4096, 16-bit mono, 1 channel  ->  32 MiB per frame

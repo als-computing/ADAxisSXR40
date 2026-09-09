@@ -226,14 +226,32 @@ record(mbbi, "$(P)$(R)FanGear_RBV")
 # TUIDC_ENABLETEC. Absent from upstream ADTucsen. Grouped with FanGear because
 # both drive the thermal path.
 #
-# HAZARD -- the TEC's hot side is water cooled, and the AXIS-SXR-40 user manual
+# THE COOLER IS ALREADY RUNNING. This capability does not reflect, and has never
+# been observed to change, actual cooler state on this unit: it reads 0 while the
+# sensor sits well below ambient (-9.5 C on 2026-07-29, -3.1 C on 2026-08-24,
+# both with ENABLETEC = 0). The Peltier runs from camera power-on. Reading this
+# record as "the TEC is off until I enable it" is false and is the dangerous
+# misreading.
+#
+# HAZARD, and note it applies from camera power-on rather than from touching this
+# record -- the TEC's hot side is water cooled, and the AXIS-SXR-40 user manual
 # states that a water supply failure means "the sensor would overheat and
-# possibly get damaged". Nothing in software can see the coolant loop, so this
-# record cannot be interlocked. Do not enable without confirming water flow
-# (15-20 C, ~1 l/min). It is also unclear this does anything: the vendor
-# capability table marks ENABLETEC as unsupported on 4040/4040BSI even though
-# the runtime audit finds it present. Never yet exercised. See the driver source
-# and info/TODO.md.
+# possibly get damaged". Water must be flowing (15-20 C, ~1 l/min) whenever the
+# camera is powered. Nothing in software can see the coolant loop, so this record
+# cannot be interlocked -- and withholding the control would not reduce the
+# hazard, because the control is not what starts the cooler.
+#
+# Of the two directions, writing 1 cannot start a cooler that is already running;
+# writing 0 might stop cooling, which warms the sensor -- an operational problem,
+# not a damage mechanism. Neither has ever been observed to do anything.
+#
+# It is also unclear this is implemented at all: the vendor capability table
+# marks ENABLETEC as unsupported on 4040/4040BSI even though the runtime audit
+# finds it present, and an unsupported Set in this SDK fails silently.
+#
+# TECEnable_RBV is kept BECAUSE it disagrees with the temperature -- that
+# disagreement is the evidence for all of the above. See the driver source and
+# info/known-gaps/TODO.md.
 record(mbbo, "$(P)$(R)TECEnable")
 {
    field(PINI, "YES")
@@ -260,7 +278,7 @@ record(mbbi, "$(P)$(R)TECEnable_RBV")
 # statistics (Histogram / TUIDC_HISTC) to be on first -- the driver forces that
 # when you write a non-zero value here. Documented in
 # Dhyana_Series_Properties&Capabilities 3.1.9. Writes currently come back
-# TUCAMRET_NO_RESOURCE; see info/TODO.md in the support repository.
+# TUCAMRET_NO_RESOURCE; see info/known-gaps/TODO.md in the support repository.
 record(mbbo, "$(P)$(R)AutoLevels")
 {
    field(PINI, "YES")
@@ -711,14 +729,26 @@ record(mbbi, "$(P)$(R)TriggerOut1Mode_RBV")
    field(FVVL, "5")
 }
 
+# The SDK uses OPPOSITE edge encodings for input and output triggers, so the
+# labels below are deliberately the reverse of TriggerEdge above. From
+# TUDefine.h:
+#
+#     TUCTD_FAILING = 0x00, TUCTD_RISING  = 0x01   // input  (TriggerEdge)
+#     TUOPT_RISING  = 0x00, TUOPT_FAILING = 0x01   // output (TriggerOutNEdge)
+#
+# setTriggerOut() assigns nEdgeMode straight from the parameter with no
+# translation, so value 0 must read RisingEdge here. Copying the input
+# trigger's labels onto these records -- which is how they arrived from
+# ADTucsen -- silently inverts every trigger-out polarity. Fixed upstream in
+# xiaoqiangwang/ADTucsen c23ac88.
 record(mbbo, "$(P)$(R)TriggerOut1Edge")
 {
    field(PINI, "YES")
    field(DTYP, "asynInt32")
    field(OUT,  "@asyn($(PORT),$(ADDR),$(TIMEOUT))AXIS_TRGOUT1_EDGE")
-   field(ZRST, "FallingEdge")
+   field(ZRST, "RisingEdge")
    field(ZRVL, "0")
-   field(ONST, "RisingEdge")
+   field(ONST, "FallingEdge")
    field(ONVL, "1")
 }
 
@@ -727,9 +757,9 @@ record(mbbi, "$(P)$(R)TriggerOut1Edge_RBV")
    field(DTYP, "asynInt32")
    field(INP,  "@asyn($(PORT),$(ADDR),$(TIMEOUT))AXIS_TRGOUT1_EDGE")
    field(SCAN, "I/O Intr")
-   field(ZRST, "FallingEdge")
+   field(ZRST, "RisingEdge")
    field(ZRVL, "0")
-   field(ONST, "RisingEdge")
+   field(ONST, "FallingEdge")
    field(ONVL, "1")
 }
 
@@ -812,9 +842,9 @@ record(mbbo, "$(P)$(R)TriggerOut2Edge")
    field(PINI, "YES")
    field(DTYP, "asynInt32")
    field(OUT,  "@asyn($(PORT),$(ADDR),$(TIMEOUT))AXIS_TRGOUT2_EDGE")
-   field(ZRST, "FallingEdge")
+   field(ZRST, "RisingEdge")
    field(ZRVL, "0")
-   field(ONST, "RisingEdge")
+   field(ONST, "FallingEdge")
    field(ONVL, "1")
 }
 
@@ -823,9 +853,9 @@ record(mbbi, "$(P)$(R)TriggerOut2Edge_RBV")
    field(DTYP, "asynInt32")
    field(INP,  "@asyn($(PORT),$(ADDR),$(TIMEOUT))AXIS_TRGOUT2_EDGE")
    field(SCAN, "I/O Intr")
-   field(ZRST, "FallingEdge")
+   field(ZRST, "RisingEdge")
    field(ZRVL, "0")
-   field(ONST, "RisingEdge")
+   field(ONST, "FallingEdge")
    field(ONVL, "1")
 }
 
@@ -908,9 +938,9 @@ record(mbbo, "$(P)$(R)TriggerOut3Edge")
    field(PINI, "YES")
    field(DTYP, "asynInt32")
    field(OUT,  "@asyn($(PORT),$(ADDR),$(TIMEOUT))AXIS_TRGOUT3_EDGE")
-   field(ZRST, "FallingEdge")
+   field(ZRST, "RisingEdge")
    field(ZRVL, "0")
-   field(ONST, "RisingEdge")
+   field(ONST, "FallingEdge")
    field(ONVL, "1")
 }
 
@@ -919,9 +949,9 @@ record(mbbi, "$(P)$(R)TriggerOut3Edge_RBV")
    field(DTYP, "asynInt32")
    field(INP,  "@asyn($(PORT),$(ADDR),$(TIMEOUT))AXIS_TRGOUT3_EDGE")
    field(SCAN, "I/O Intr")
-   field(ZRST, "FallingEdge")
+   field(ZRST, "RisingEdge")
    field(ZRVL, "0")
-   field(ONST, "RisingEdge")
+   field(ONST, "FallingEdge")
    field(ONVL, "1")
 }
 

@@ -37,4 +37,15 @@ $(P)$(R)TriggerOut3Mode
 $(P)$(R)TriggerOut3Edge
 $(P)$(R)TriggerOut3Delay
 $(P)$(R)TriggerOut3Width
+
+# TECEnable is deliberately NOT saved here, and must not be added.
+#
+# The record is PINI=YES with a default of Disable, so every boot writes the TEC
+# OFF -- the safe state, and the only state software can justify, since nothing
+# here can see the coolant loop (see the HAZARD note in axisSXR40.template).
+# Autosaving it would invert that: a session that left the TEC enabled would
+# silently re-enable it at the next boot, unattended, with no confirmation that
+# water is flowing. The manual states a water failure can damage the sensor.
+# Leave it out.
+
 file "ADBase_settings.req", P=$(P), R=$(R)

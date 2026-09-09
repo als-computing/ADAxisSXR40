@@ -18,7 +18,7 @@
  *   (EPICS Open License).
  *
  * DIFFERENCES FROM ADTucsen -- each justified by a measured property of this
- * camera, documented in info/dhyana-xfxv4040bsi.md of the
+ * camera, documented in info/camera/dhyana-xfxv4040bsi.md of the
  * AXIS-SXR-40 support repository:
  *
  *   1. WaitForFrame is given an explicit timeout derived from the exposure.
@@ -433,11 +433,26 @@ axisSXR40::axisSXR40(const char *portName, int cameraId, int traceMask, int maxB
             epicsThreadGetStackSize(epicsThreadStackMedium),
             imageGrabTaskC, this);
 
-    /* Launch temp task */
-    epicsThreadCreate("AxisSXR40TempReadTask",
-            epicsThreadPriorityMedium,
-            epicsThreadGetStackSize(epicsThreadStackMedium),
-            tempReadTaskC, this);
+    /* Launch temp task -- unless disabled for diagnosis.
+     *
+     * AXIS_NO_TEMP_POLL (any value) skips this thread entirely. It exists to test
+     * one hypothesis from info/incidents/stop-deadlock.md: that this poll's USB control
+     * transfers, interleaved with a high-frame-rate stream stop, contribute to the
+     * camera ceasing to complete USB transfers. In the 2026-08-25 13:25 deadlock
+     * the poll was the thread caught holding the port lock inside the SDK; whether
+     * it is a cause or only the most frequent victim is what this switch tests.
+     * With it set, TemperatureActual, TransferRate, BuffFrames and BuffTotal stop
+     * updating. Diagnostic only -- never set it in normal operation. */
+    if (getenv("AXIS_NO_TEMP_POLL") == NULL) {
+        epicsThreadCreate("AxisSXR40TempReadTask",
+                epicsThreadPriorityMedium,
+                epicsThreadGetStackSize(epicsThreadStackMedium),
+                tempReadTaskC, this);
+    } else {
+        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                "%s: AXIS_NO_TEMP_POLL is set -- temperature/telemetry poll DISABLED "
+                "(diagnostic mode, see info/incidents/stop-deadlock.md)\n", driverName);
+    }
 
     /* Launch shutdown task */
     epicsAtExit(c_shutdown, this);
@@ -711,7 +726,7 @@ void axisSXR40::imageGrabTask(void)
              *
              * 1 is the documented value for one-frame-at-a-time capture, which is
              * what grabImage() does. Ring depth is not settable from here; it is
-             * fixed at 2 in SDK 2.0.7.0. See info/TODO.md in the support repo. */
+             * fixed at 2 in SDK 2.0.7.0. See info/known-gaps/TODO.md in the support repo. */
             frameHandle_.uiRsdSize = 1;
             tucStatus = TUCAM_Buf_Alloc(camHandle_.hIdxTUCam, &frameHandle_);
             tucStatus = TUCAM_Cap_Start(camHandle_.hIdxTUCam, triggerMode);
@@ -801,7 +816,11 @@ asynStatus axisSXR40::grabImage()
 {
     static const char* functionName = "grabImage";
     asynStatus status = asynSuccess;
-    int tucStatus;
+    /* TUCAMRET, not int: this is compared against TUCAMRET_ABORT below, and
+     * the enum's values run past INT_MAX (TUCAMRET_NOT_SUPPORT is 0x80000312),
+     * so an int comparison is both signedness-mismatched and lossy. Part of
+     * the same upstream fix, xiaoqiangwang/ADTucsen c0d7081. */
+    TUCAMRET tucStatus;
     int nCols, nRows;
     int pixelFormat, channels, pixelBytes;
     size_t dataSize, tDataSize;
@@ -839,9 +858,17 @@ asynStatus axisSXR40::grabImage()
     tucStatus = TUCAM_Buf_WaitForFrame(camHandle_.hIdxTUCam, &frameHandle_, waitTimeout);
     lock();
     if (tucStatus!= TUCAMRET_SUCCESS){
-        asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
-                "%s:%s: failed to wait for buffer (0x%x) after %d ms\n",
-                driverName, functionName, tucStatus, waitTimeout);
+        /* TUCAMRET_ABORT is how a normal stop arrives here: stopCapture calls
+         * TUCAM_Buf_AbortWait(), which breaks this wait deliberately. Logging
+         * it as an error made every user-initiated stop look like a failure --
+         * and, because the message names the timeout, specifically like a
+         * timeout that had not actually elapsed. Fixed upstream in
+         * xiaoqiangwang/ADTucsen c0d7081. Still returns asynError either way;
+         * only the log is suppressed. */
+        if (tucStatus != TUCAMRET_ABORT)
+            asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
+                    "%s:%s: failed to wait for buffer (0x%x) after %d ms\n",
+                    driverName, functionName, tucStatus, waitTimeout);
         return asynError;
     }
 
@@ -1192,7 +1219,35 @@ asynStatus axisSXR40::writeInt32( asynUser *pasynUser, epicsInt32 value)
     } else if (function==AxisSXR40TECEnable){
         /* Thermoelectric cooler on/off. Absent from ADTucsen.
          *
-         * ---- HARDWARE HAZARD -------------------------------------------------
+         * ---- READ THIS FIRST: THE COOLER IS ALREADY RUNNING -------------------
+         * The obvious reading of the hazard note below -- "the TEC is off until
+         * someone enables it here" -- is FALSE, and it is the dangerous reading.
+         *
+         * This capability is decoupled from actual cooler state on this unit.
+         * Measured 2026-07-29: TUIDC_ENABLETEC reads 0 while the sensor holds
+         * -9.5 C in a room-temperature lab; re-confirmed 2026-08-24 at -3.1 C
+         * with the capability still reading 0. A sensor that far below ambient is
+         * being actively cooled. The Peltier runs from camera power-on, whatever
+         * this reads and whatever is written here.
+         *
+         * The consequence for the hazard: the coolant dependency is a STANDING
+         * CONDITION of having the camera powered, not something this control
+         * switches on. Water must be flowing whenever the camera is on -- that is
+         * a beamline interlock question, and nothing in this driver, including
+         * refusing to expose this parameter, affects it either way.
+         *
+         * The consequence for this code path: writing 1 cannot start a cooler
+         * that is already running. Writing 0 is the direction with any prospect
+         * of effect, and stopping cooling warms the sensor, which is an
+         * operational problem, not a damage mechanism -- sensors are damaged by a
+         * TEC running without heat rejection, not by being warm. Neither
+         * direction has ever been observed to change anything.
+         *
+         * The readback is kept precisely BECAUSE it disagrees with reality: it is
+         * the evidence for everything above. Do not "fix" it to match the
+         * temperature, and do not delete it.
+         *
+         * ---- HARDWARE HAZARD (applies from camera power-on, see above) --------
          * The TEC's hot side is cooled by circulating water, and the AXIS-SXR-40
          * user manual is explicit about what happens without it (callout J,
          * p6): "A water supply failure would prevent the Peltier cooler from
@@ -1208,8 +1263,9 @@ asynStatus axisSXR40::writeInt32( asynUser *pasynUser, epicsInt32 value)
          * the sensor" if the chamber vacuum is imperfect.
          *
          * Nothing in software can see the coolant loop, so this driver cannot
-         * interlock it. Do not enable the TEC without confirming water is
-         * flowing.
+         * interlock it -- and, per the note at the top, cannot avoid the hazard
+         * by withholding the control either. Water must be flowing whenever the
+         * camera is powered, not merely when someone touches this parameter.
          *
          * ---- AND IT MAY NOT DO ANYTHING -------------------------------------
          * reportCapabilitySupport() finds TUIDC_ENABLETEC present, but

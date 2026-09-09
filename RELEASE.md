@@ -38,14 +38,20 @@ R3-14 and asyn R4-45 on Ubuntu 26.04 / GCC 15.2. **Not yet run against the
 camera.**
 
 Seven changes from upstream ADTucsen, each driven by a measured property of this
-camera (see `info/dhyana-xfxv4040bsi.md`):
+camera (see `info/camera/dhyana-xfxv4040bsi.md`):
 
 1. `TUCAM_Buf_WaitForFrame` is given an explicit `exposure + 3000 ms` timeout.
    Upstream relied on the header default of 1000 ms, so every exposure past ~1 s
    failed — and this camera's range reaches 3600 s.
 2. Frame data is copied row by row via `uiWidthStep` instead of one flat
    `memcpy`, with a contiguous fast path.
-3. *(reserved — parameter pruning; see Known gaps in README.md)*
+3. The 8 parameters this camera does not implement are **kept** in the driver and
+   the `.template`, not pruned. Their controls are off both `medm` screens, but the
+   records stay: they are harmless, removing them would fork the parameter set away
+   from upstream for no functional gain, and `reportCapabilitySupport()` is the
+   authoritative statement of what the camera implements — a list that is generated
+   from the hardware at every boot cannot go stale the way a hand-pruned database
+   can. See Known gaps in `info/known-gaps/README.md`.
 4. Added `AXIS_TEC_ENABLE`, `AXIS_BUFF_FRAMES`, `AXIS_BUFF_TOTAL`. The SDK ring
    is only 2 frames deep, so ring occupancy is the dropped-frame early warning.
 5. Fixed the text-info calling convention: `TUCAM_VALUE_INFO.pText` must be
@@ -54,9 +60,14 @@ camera (see `info/dhyana-xfxv4040bsi.md`):
    `ADModel`, `ADSDKVersion` and `ADFirmwareVersion` were blank.
 6. Fixed a copy-paste bug in the ROI height clamp, which wrote the clamped
    height into `ADSizeX`.
-7. ROI width, height and both offsets are aligned down to a multiple of 4, as
-   the camera requires. Unaligned values were silently rounded, so the readback
-   disagreed with the request.
+7. ROI values are aligned down before being handed to the SDK. Unaligned values
+   were silently rounded by the camera, so the readback disagreed with the request.
+   The requirement is **asymmetric**: width to a multiple of **8**, height and both
+   offsets to a multiple of **4**. Aligning width to 4 — which is what upstream and
+   the vendor's own GUI (`((v >> 2) << 2)`) do — is too permissive and leaves the
+   camera silently narrowing half of all valid-looking width requests. Measured
+   2026-07-29; full evidence in
+   `info/porting/differences-from-adtucsen.md`.
 
 Also added `reportCapabilitySupport()`, which probes every id the driver drives
 at connect and logs what this camera actually implements — 8 of the 26 ids
@@ -154,7 +165,16 @@ Frame rate versus ROI height — measured
 
 > Method, the traps involved, and a re-runnable script:
 > [info/performance/](info/performance/). Full conditions and analysis:
-> [info/performance/2026-07-29-roi-frame-rate.md](info/performance/2026-07-29-roi-frame-rate.md).
+> [info/performance/2026-07-29-roi-frame-rate-physical.md](info/performance/2026-07-29-roi-frame-rate-physical.md).
+> The same sweep on a KVM guest, one document per USB controller:
+> [info/performance/2026-08-25-roi-frame-rate-vm-asmedia-bl1101ad01.md](info/performance/2026-08-25-roi-frame-rate-vm-asmedia-bl1101ad01.md) (ASMedia, the
+> configuration that deadlocked) and
+> [info/performance/2026-08-26-roi-frame-rate-vm-renesas-bl1101ad01.md](info/performance/2026-08-26-roi-frame-rate-vm-renesas-bl1101ad01.md) (Renesas — clean, and
+> at bare-metal speed). Physical versus VM, side by side:
+> [info/performance/comparison.md](info/performance/comparison.md).
+> **Caveat (2026-08-26):** the frames behind the VM figures turned out to be a
+> camera-generated test ramp, not sensor data — rates and loss counts stand, image
+> content does not; see [info/known-gaps/TODO.md](info/known-gaps/TODO.md) §8.
 
 The AXIS test report §3.1 tabulates frame rate against ROI height at full width.
 Checked against this IOC on 2026-07-29 in continuous mode at 20.64 µs exposure, so
@@ -266,8 +286,12 @@ calls but no records and no widgets, so the TEC control and the dropped-frame
 telemetry were unreachable from EPICS despite being listed as delivered.
 `TECEnable`/`TECEnable_RBV` are an mbbo/mbbi pair beside `FanGear`; the two
 counters are `longin`. `BuffTotal_RBV` reads **2** from the camera, confirming the
-documented SDK ring depth over EPICS for the first time. OPI widgets still
-pending.
+documented SDK ring depth over EPICS for the first time.
+
+OPI widgets have since been added to the `medm` `.adl` screens, alongside removing
+the 8 unsupported controls. The `caQtDM` `.ui` files are still stale — they are
+generated, and regenerating them needs `adl2ui`, which is not installed on this
+host. See Known gaps.
 
 Supporting work in the parent repository: `../CameraProbe` (read + capture path)
 and `../ControlProbe` (the write/control path — all 26 SDK calls this driver

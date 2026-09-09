@@ -34,7 +34,7 @@ endif
 # libTUCam symbol-interposition workaround.
 #
 # libTUCam.so.1 statically bundles libjpeg, libtiff, libpng and zlib and exports
-# every one of their symbols -- 160 jpeg_*, 171 tiff, 399 png_, 37
+# every one of their symbols -- 138 jpeg_*, 171 TIFF*, 399 png_*, 36
 # deflate/inflate. That makes it interpose on ADCore's real copies:
 # libaxisSXR40.so is this IOC's first DT_NEEDED, so libTUCam is reached at
 # dependency level 2 before libNDPlugin's libjpeg/libtiff/libpng, and the

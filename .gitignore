@@ -16,8 +16,11 @@ cdCommands*
 dllPath*
 auto_settings.sav*
 
-# Site overrides -- intentionally local, never committed
+# Site overrides -- intentionally local, never committed.
+# Both levels are needed: the IOC under iocs/ has its own TOP, so the
+# module's configure/*.local is NOT visible to the IOC build.
 configure/*.local
+iocs/*/configure/*.local
 
 # The SDK writes a per-camera profile named <Model>_PID<pid>_<SERIAL>.xml into
 # whatever directory the IOC runs from.
