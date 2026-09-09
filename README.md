@@ -149,7 +149,7 @@ fault found two layers up takes days.
    where to download it.
 6. **The camera on USB 3.0**, visible as ID `5453:e41b` in `lsusb`. Raise
    `usbfs_memory_mb` from its 16 MB default — one full frame is 32 MiB — see
-   [info/TODO.md](info/TODO.md).
+   [info/known-gaps/TODO.md](info/known-gaps/TODO.md).
 
 ## Build
 
@@ -221,4 +221,4 @@ What is verified, what is unexercised, and what is known-broken is tracked in
 in anger. Headline: full-frame acquisition and TIFF/HDF5 writing are verified
 against the camera; external triggering and TEC control are implemented but
 have never been exercised. The larger open problems, with evidence and repro
-steps, are in [info/TODO.md](info/TODO.md).
+steps, are in [info/known-gaps/TODO.md](info/known-gaps/TODO.md).

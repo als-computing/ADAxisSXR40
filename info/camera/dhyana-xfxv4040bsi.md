@@ -4,7 +4,7 @@
 > instrument; the **Tucsen Dhyana XFXV4040BSI** (USB `5453:e41b`, s/n
 > `KBSG09024003`) is the camera inside it, and everything here is camera-level.
 > The SDK never reports the name "AXIS". Full breakdown of the three layers in
-> [../README.md](../README.md); note this is the **XFXV** variant (`E41B`), not
+> [../README.md](../../README.md); note this is the **XFXV** variant (`E41B`), not
 > the plain `Dhyana 4040BSI` (`E413`) — specs and firmware differ.
 
 ## At a glance — the numbers you'll keep needing

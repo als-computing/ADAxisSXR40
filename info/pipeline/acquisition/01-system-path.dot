@@ -1,0 +1,24 @@
+digraph G { bgcolor=white; newrank=true; nodesep=0.45; ranksep=0.5;
+ node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, fillcolor="#f7f7f7"]; edge [fontname="Helvetica", fontsize=10];
+ sensor [label="GSENSE4040 BSI sensor\n4096 × 4096 px, 9 µm\nrolling shutter, 10.32 µs per row", fillcolor="#fff3c4"];
+ fpga   [label="camera FPGA\n1024-byte header + 16-bit pixels\nUSB 3 bulk stream", fillcolor="#fff3c4"];
+ harness [label="DB15-optical harness\nUSB 3 over single-mode fiber\nDN63CF vacuum feedthrough", fillcolor="#fff3c4"];
+ dongle  [label="optical → USB 3 dongle\n(SFP, no driver)"];
+ hub     [label="VL813 USB 3 hub"];
+ xhci    [label="Renesas uPD720202 xHCI\nPCIe, on the hypervisor board", fillcolor="#e3eefa"];
+ vfio    [label="Proxmox\nVFIO PCI passthrough", fillcolor="#e3eefa"];
+ kern    [label="VM bl1101ad01 kernel\nxhci-pci-renesas · usbfs", fillcolor="#e3eefa"];
+ sdk     [label="libTUCam (Tucsen SDK)\nlibusb · 2-slot ring buffer", fillcolor="#e6f4e6"];
+ drv     [label="ADAxisSXR40 driver\ngrab thread: one memcpy → NDArray", fillcolor="#e6f4e6"];
+ plug    [label="ADCore plugins\nHDF1 (others disabled)", fillcolor="#e6f4e6"];
+ pc      [label="kernel page cache", fillcolor="#eeeeee"];
+ disk    [label="virtual disk (virtio)\n/home/…/perf*.h5", fillcolor="#eeeeee"];
+ // row 1 left→right, row 2 right→left, row 3 left→right, so the row connectors are short verticals
+ { rank=same; sensor -> fpga [label="rows"]; fpga -> harness [label="5 Gb/s"]; harness -> dongle; }
+ { rank=same; kern -> vfio -> xhci -> hub [style=invis]; }
+ { rank=same; sdk -> drv [label="Buf_WaitForFrame"]; drv -> plug [label="pointer, no copy"]; plug -> pc [label="H5Dwrite"]; pc -> disk [label="writeback"]; }
+ dongle -> hub [label="~289 MB/s usable"];
+ hub -> xhci [constraint=false]; xhci -> vfio [constraint=false]; vfio -> kern [constraint=false];
+ kern -> sdk [label="URB completions"];
+ sensor -> kern [style=invis, weight=30];
+}

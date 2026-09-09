@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="320" viewBox="0 0 840 320" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13">
+<rect width="840" height="320" fill="white"/>
+<text x="90.0" y="24.0" font-size="15" text-anchor="start" fill="#222" font-weight="bold">One write-mode capture on the wall clock</text>
+<text x="90.0" y="42.0" font-size="12" text-anchor="start" fill="#555" font-weight="normal">2048 rows, 100 frames, Multiple mode — Renesas, 2026-08-26: wall clock 6.3 s, camera time 5.73 s</text>
+<line x1="90.0" y1="60.0" x2="90.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="90.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">0 s</text>
+<line x1="186.0" y1="60.0" x2="186.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="186.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">1 s</text>
+<line x1="282.0" y1="60.0" x2="282.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="282.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">2 s</text>
+<line x1="378.0" y1="60.0" x2="378.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="378.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">3 s</text>
+<line x1="474.0" y1="60.0" x2="474.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="474.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">4 s</text>
+<line x1="570.0" y1="60.0" x2="570.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="570.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">5 s</text>
+<line x1="666.0" y1="60.0" x2="666.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="666.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">6 s</text>
+<line x1="762.0" y1="60.0" x2="762.0" y2="250.0" stroke="#e6e6e6" stroke-width="1.2"/>
+<text x="762.0" y="268.0" font-size="13" text-anchor="middle" fill="#222" font-weight="normal">7 s</text>
+<text x="82.0" y="83.0" font-size="13" text-anchor="end" fill="#222" font-weight="normal">camera</text>
+<rect x="90.0" y="65.0" width="33.6" height="26.0" fill="#eeeeee" stroke="#222" rx="3"/>
+<text x="106.8" y="83.0" font-size="12" text-anchor="middle" fill="#222" font-weight="normal">start</text>
+<rect x="123.6" y="65.0" width="550.1" height="26.0" fill="#f6d55c" stroke="#222" rx="3"/>
+<text x="398.6" y="83.0" font-size="12" text-anchor="middle" fill="#222" font-weight="normal">100 frames at 17.3 fps  (5.73 s of camera time)</text>
+<text x="82.0" y="128.0" font-size="13" text-anchor="end" fill="#222" font-weight="normal">driver</text>
+<rect x="123.6" y="110.0" width="550.1" height="26.0" fill="#d5f0d5" stroke="#222" rx="3"/>
+<text x="398.6" y="128.0" font-size="12" text-anchor="middle" fill="#222" font-weight="normal">grab thread: WaitForFrame → memcpy → callbacks, one frame at a time</text>
+<text x="82.0" y="173.0" font-size="13" text-anchor="end" fill="#222" font-weight="normal">HDF1</text>
+<rect x="90.0" y="155.0" width="33.6" height="26.0" fill="#eeeeee" stroke="#222" rx="3"/>
+<text x="106.8" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="normal">open</text>
+<rect x="128.4" y="155.0" width="547.2" height="26.0" fill="#cfe3f7" stroke="#222" rx="3"/>
+<text x="402.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="normal">H5Dwrite each frame into the page cache, 1–2 frames behind the camera</text>
+<rect x="675.6" y="155.0" width="19.2" height="26.0" fill="#f3b7b7" stroke="#222" rx="3"/>
+<text x="699.6" y="173.0" font-size="11" text-anchor="start" fill="#c0392b" font-weight="normal">close (0.2 s)</text>
+<text x="82.0" y="218.0" font-size="13" text-anchor="end" fill="#222" font-weight="normal">kernel</text>
+<rect x="147.6" y="200.0" width="643.2" height="26.0" fill="#f4f4f4" stroke="#999999" rx="3" stroke-dasharray="5,3"/>
+<text x="469.2" y="218.0" font-size="12" text-anchor="middle" fill="#555" font-weight="normal">background writeback of dirty pages to the virtual disk — continues after Capture = Done</text>
+<line x1="694.8" y1="58.0" x2="694.8" y2="252.0" stroke="#c0392b" stroke-width="1.2" stroke-dasharray="4,3"/>
+<text x="689.8" y="72.0" font-size="11" text-anchor="end" fill="#c0392b" font-weight="normal">6.3 s: Capture_RBV = Done</text>
+<text x="450.0" y="300.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">end-to-end fps = 100 / 6.3 s = 15.8 against a camera rate of 17.3: the 0.5 s of start-up + close is the same for a 3 s and a 10 s capture</text>
+</svg>

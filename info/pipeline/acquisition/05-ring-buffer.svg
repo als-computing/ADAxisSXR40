@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="360" viewBox="0 0 840 360" font-family="DejaVu Sans, Helvetica, Arial, sans-serif" font-size="13">
+<rect width="840" height="360" fill="white"/>
+<text x="30.0" y="24.0" font-size="15" text-anchor="start" fill="#222" font-weight="bold">The SDK ring buffer: two slots, used in turn</text>
+<text x="150.0" y="75.0" font-size="13" text-anchor="middle" fill="#222" font-weight="bold">now</text>
+<path d="M150,175 L150.0,105.0 A70,70 0 0 1 150.0,245.0 Z" fill="#cfe3f7" stroke="#222"/>
+<text x="185.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="bold">slot 0</text>
+<text x="185.0" y="188.0" font-size="11" text-anchor="middle" fill="#222" font-weight="normal">filling</text>
+<path d="M150,175 L150.0,245.0 A70,70 0 0 1 150.0,105.0 Z" fill="#d5f0d5" stroke="#222"/>
+<text x="115.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="bold">slot 1</text>
+<text x="115.0" y="188.0" font-size="11" text-anchor="middle" fill="#222" font-weight="normal">ready</text>
+<text x="150.0" y="269.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">the SDK's USB thread fills one slot while</text>
+<text x="150.0" y="283.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">the driver's grab thread copies the other out</text>
+<text x="420.0" y="75.0" font-size="13" text-anchor="middle" fill="#222" font-weight="bold">one frame period later</text>
+<path d="M420,175 L420.0,105.0 A70,70 0 0 1 420.0,245.0 Z" fill="#d5f0d5" stroke="#222"/>
+<text x="455.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="bold">slot 0</text>
+<text x="455.0" y="188.0" font-size="11" text-anchor="middle" fill="#222" font-weight="normal">ready</text>
+<path d="M420,175 L420.0,245.0 A70,70 0 0 1 420.0,105.0 Z" fill="#cfe3f7" stroke="#222"/>
+<text x="385.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="bold">slot 1</text>
+<text x="385.0" y="188.0" font-size="11" text-anchor="middle" fill="#222" font-weight="normal">filling</text>
+<text x="420.0" y="269.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">the two indices advance and wrap;</text>
+<text x="420.0" y="283.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">no allocation, memory fixed at Buf_Alloc</text>
+<text x="690.0" y="75.0" font-size="13" text-anchor="middle" fill="#222" font-weight="bold">grab thread late by 2 frames</text>
+<path d="M690,175 L690.0,105.0 A70,70 0 0 1 690.0,245.0 Z" fill="#f3b7b7" stroke="#222"/>
+<text x="725.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="bold">slot 0</text>
+<text x="725.0" y="188.0" font-size="9" text-anchor="middle" fill="#222" font-weight="normal">overwritten</text>
+<path d="M690,175 L690.0,245.0 A70,70 0 0 1 690.0,105.0 Z" fill="#cfe3f7" stroke="#222"/>
+<text x="655.0" y="173.0" font-size="12" text-anchor="middle" fill="#222" font-weight="bold">slot 1</text>
+<text x="655.0" y="188.0" font-size="11" text-anchor="middle" fill="#222" font-weight="normal">filling</text>
+<text x="690.0" y="269.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">the producer wraps onto an unread slot:</text>
+<text x="690.0" y="283.0" font-size="11" text-anchor="middle" fill="#555" font-weight="normal">frame gone — no counter, no message</text>
+<text x="420.0" y="325.0" font-size="12" text-anchor="middle" fill="#222" font-weight="normal">N fixed slots used circularly: fast and allocation-free; the price is a silent overwrite when the reader falls N frames behind.</text>
+<text x="420.0" y="343.0" font-size="12" text-anchor="middle" fill="#555" font-weight="normal">Here N = 2 (pinned by SDK 2.0.7.0), so each frame must be collected within one frame period: 114 ms at full frame, 0.28 ms at 8 rows.</text>
+</svg>

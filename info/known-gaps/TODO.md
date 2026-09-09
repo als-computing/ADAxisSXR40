@@ -1,12 +1,13 @@
 # Open problems — AXIS-SXR-40 / ADAxisSXR40
 
-Last updated 2026-07-29. The IOC works against the camera: full-frame, binned and
+Last updated 2026-08-26. The IOC works against the camera: full-frame, binned and
 ROI acquisition, TIFF and HDF5 (including zlib) writing, and software triggering are
-all verified. **6 open items**, ordered by how much they block real use, then
-host notes.
+all verified. **8 open items**, ordered by how much they block real use, then
+host notes — except the newest, §8, which is listed last but blocks everything: on
+2026-08-26 the camera was found to be delivering a test ramp instead of images.
 
-Two need equipment rather than a keyboard (1, 3); one needs a converter that is not
-installed (4). The rest is small.
+Two need equipment rather than a keyboard (2, 4); one needs a detector power cycle and a look at pixels (8); one needs a converter that is not
+installed (5). One is a driver bug that blocks the others being exercised safely (1). The rest is small.
 
 This file lists only what is still open. Work already done is not repeated here —
 it lives where it is useful: the measured results and change history in the driver's
@@ -16,14 +17,55 @@ its `README.md`. The driver is at
 `/opt/epics/synApps/support/areaDetector-R3-14/ADAxisSXR40`.
 
 The vendor manuals are converted to Markdown -- the two AXIS ones in
-[manuals/](manuals/) here, the two Tucsen SDK ones in the companion
+[manuals/](../manuals/) here, the two Tucsen SDK ones in the companion
 `AXIS-SXR-40-SDK` repository under `info/manuals/` -- and they answered
 several questions that used to be on this list — check there before assuming
 something is undocumented.
 
 ---
 
-## 1. TEC enable has never been actuated — and now there are two reasons
+## 1. `Acquire=0` can deadlock the IOC — `TUCAM_Cap_Stop` hangs while holding the asyn port lock *(operationally resolved 2026-08-25 by changing USB controller; driver hardening still open)*
+Added 2026-08-25. Seen after continuous acquisition at 32 rows (2 of 2), 8 rows
+(1 of 2) and 128 rows (1 of 3); not seen in 20 stops at ≥ 256 rows. After a high-rate
+stop the camera stops completing USB transfers, and whichever SDK call is then in
+flight under the asyn port lock blocks forever — caught twice with gdb: `TUCAM_Cap_Stop`
+in `stopCapture()` (from `writeInt32`), and `TUCAM_Prop_GetValue` in the temperature
+task, which polls under the lock every 0.5 s and so is the thread most likely to be
+caught — turning a silent camera into a dead IOC within 0.5 s even when `Cap_Stop`
+returns. Tested 2026-08-25 with `AXIS_NO_TEMP_POLL=1` (poll thread not started): the camera
+still went silent after the first 32-row stop, and the next SDK call under the lock —
+the exposure write, `TUCAM_Prop_SetValue` from `writeFloat64` — hung instead. The poll
+is a victim, not a cause (n = 1); slowing or removing it is not a mitigation. A `usbmon`
+capture of one deadlock (14:42) shows: `Cap_Stop` sends the camera no stop command,
+only cancels host URBs; each cancel takes ~100 ms to complete (1.5 s for 15); the next
+control transfer to the camera is submitted and never returned. Evidence in
+[stop-deadlock.md](../incidents/stop-deadlock.md) "Below the SDK". `dmesg` at the same instant: the xhci driver
+logged `Transfer event TRB DMA ptr not part of current TD` on the bulk endpoint
+(`comp_code 28`, Stopped–Short Packet) — controller/driver ring desync during the
+cancellation, also present on a stop that did *not* deadlock. Controller-path problem
+(ASM2142 under VFIO). **Update 16:31:** the detector was moved to a Renesas uPD720202 controller (still
+passthrough, same VM): **38 of 38 stops clean** across every height including 8 rows at 3567 fps, and the
+acquire-only frame rates match bare metal at every height. The ASMedia controller was the amplifier.
+Driver hardening (no SDK call under the lock) is still warranted — the SDK stop is
+still command-less and untimed — but the operational problem is resolved by hardware. The port thread never
+returns; every later `caput` to the driver queues forever; `DetectorState` stays
+`Acquire`; plugins get nothing; `exit` and `SIGTERM` hang; `SIGKILL` wedges the
+camera and a VM reboot is needed. Caught with gdb — full analysis, stacks, tally
+and the fix in [stop-deadlock.md](../incidents/stop-deadlock.md).
+
+**Fix:** never hold the port lock across an SDK call — `Cap_Stop`/`Buf_Release` move
+into the image task (already unlocked there), `tempTask` calls the SDK unlocked and
+locks only to store results, and property/capability writes need the same or a
+bounded worker. Add a liveness watchdog (write round-trip). Report to Tucsen.
+
+**Until fixed:** do not acquire at ROI heights ≤ 128 unattended. **Confirmed on
+upstream ADTucsen too** (2026-08-25: Damon's IOC deadlocked on its first stop at 32
+rows, identical signature) — this is the SDK's stop path, not this driver, and the
+fix applies to both. Note `DetectorState_RBV` can read `Idle` while deadlocked (upstream always; this
+driver in the temperature-task shape), so that field is not a usable indicator; a
+write round-trip is.
+
+## 2. TEC enable has never been actuated — and now there are two reasons
 `TECEnable` reads `Disable`. Writing it has **not** been tried, and the manuals
 turned a precaution into a documented hazard plus a doubt about whether it even
 works.
@@ -59,7 +101,7 @@ The documented setpoint default for this model is 30, i.e. **−20 °C** (range
 [0,100], "Min Temperature −50"), matching the manual's "−20 °C suitable for
 measurements".
 
-## 2. `ReverseY` does not take, and nothing explains why
+## 3. `ReverseY` does not take, and nothing explains why
 
 The other three "supported but rejecting" parameters turned out to be fine — see
 the `setCapability` readback fix (see the driver's RELEASE.md). `ReverseY`
@@ -82,7 +124,7 @@ horizontally, so anyone reaching for a flip should check whether they actually w
 Low priority: image orientation is trivially fixed downstream in a plugin or in
 analysis, and no experiment is blocked by it.
 
-## 3. Hardware triggering still needs a signal source and a scope
+## 4. Hardware triggering still needs a signal source and a scope
 The software half is done and recorded in the driver's RELEASE.md: `Software`
 trigger mode gates
 correctly and trigger-out configures on all three ports. What remains needs
@@ -98,7 +140,7 @@ equipment in the room:
   or that `Exposure Start` / `Exposure Global` / `Readout End` fire where their
   names claim.
 
-## 4. The `.ui` screens are stale, and no converter is installed
+## 5. The `.ui` screens are stale, and no converter is installed
 The `medm` `.adl` screens are updated but
 `axisSXR40App/op/ui/autoconvert/*.ui` still date from before and therefore still
 show all 8 unsupported controls and none of the 3 new ones.
@@ -109,12 +151,12 @@ regenerating from the `.adl` files with `adl2ui` (or caQtDM's converter), and
 **neither is installed on this host**. Anyone using caQtDM rather than medm is
 looking at the old layout until that happens.
 
-## 5. The libTUCam interposition fix has a wider blast radius
+## 6. The libTUCam interposition fix has a wider blast radius
 Fixed and now proven for this IOC, but the underlying situation is not specific to
 us and is worth writing down before it bites someone else.
 
 `libTUCam.so.1` statically bundles libjpeg, libtiff, libpng and zlib and exports
-**all** of their symbols — 160 `jpeg_*`, 171 tiff, 399 `png_`, 37
+**all** of their symbols — 138 `jpeg_*`, 171 `TIFF*`, 399 `png_*`, 36
 deflate/inflate. Any areaDetector IOC that links TUCam gets those symbols into
 the global scope ahead of ADCore's real copies, because the driver library is an
 earlier `DT_NEEDED` than `libNDPlugin`.
@@ -142,7 +184,7 @@ Left open:
   but the ordering is wrong regardless and cost real time to diagnose here.
 - Any future ADTucsen/ADDhyana module will need the same treatment.
 
-## 6. Small, mechanical
+## 7. Small, mechanical
 
 - **The ROI cannot be grown back to full frame without zeroing the offsets first.**
   Setting `SizeX`/`SizeY` while a non-zero `MinX`/`MinY` is still in place clamps the
@@ -159,6 +201,48 @@ Left open:
   worth one check against a fresh extraction so the table is right.
 
 ---
+
+## 8. The camera is delivering a synthetic test ramp instead of sensor data *(found 2026-08-26)*
+
+**What was seen.** Every frame written by the 2026-08-26 Renesas benchmark — 22 090
+frames in nine files, plus single-frame probes taken afterwards at 50 ms, 1 s and 5 s
+exposure — has min 0, max 65280, mean exactly 32640.0 and 1/256 of its pixels at zero:
+256 distinct values, all multiples of 256, decreasing by 256 per column, shifting by
+256 per row, with an arbitrary offset per frame. `FrameFormat = Usual` gives the same
+ramp after the SDK's level processing (two values, 33338 and 32195, the latter exactly
+where the raw ramp is zero). A real dark frame from this camera has mean ~68 ADU and
+sensor noise ([dhyana-xfxv4040bsi.md](../camera/dhyana-xfxv4040bsi.md), measured 2026-07-29 on
+the physical host).
+
+**What it is not.** Not exposure (identical at 50 ms, 1 s, 5 s), not the frame format,
+not the driver's copy path (a moving 8-bit ramp cannot be manufactured from sensor data
+by a wrong offset or stride — and the size check passes), not the HDF5 writer (the
+pattern is in the camera's own `Raw` frames). It is generated inside the camera: either
+its test-image generator (`TUIDC_TESTIMGMODE`, which the SDK reports as *unsupported*
+on this unit, so nothing in this software could have enabled it) or a substitute
+pattern the FPGA emits when it receives nothing from the sensor.
+
+**What is not known.** When it started. No run on this VM (2026-08-24 onward) inspected
+pixel values before 2026-08-26; the upstream-ADTucsen frames on 2026-08-25 were counted,
+not looked at. The detector was power-cycled on 2026-08-25 (morning) and the camera
+moved between USB controllers that afternoon.
+
+**To do, in order.**
+
+1. Power-cycle the detector, start the IOC, take one 50 ms full frame into HDF5 and
+   run `tools/h5check` on it. Mean near 68 with noise → the pattern was a
+   transient state and this item closes with a note. Still 32640.0 → hardware/firmware
+   fault; contact AXIS/Tucsen with the ramp description above.
+2. If it persists, confirm with the vendor's own tool (Mosaic, Windows) on a laptop
+   plugged directly into the camera, to take the whole EPICS/VM/passthrough stack out
+   of the question.
+3. Regardless: the benchmark script has no way to know whether it is timing images or
+   a pattern. Add a content check to the write-mode leg (build `h5check` once, run it
+   on the file, fail on `mean == 32640.0`), or at least make the README's manual check
+   part of the procedure.
+4. The frame-rate, loss and deadlock results are unaffected — the ramp has the frame's
+   real size and travels the real path — but nothing measured on this VM says anything
+   about the sensor. Both VM results documents and `comparison.md` carry the caveat.
 
 ## Host and environment (not code)
 

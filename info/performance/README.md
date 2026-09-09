@@ -5,8 +5,16 @@ tabulates frame rate against ROI height. This directory holds the method for
 checking those figures through the EPICS IOC, and for measuring what file writing
 costs on top.
 
-Results live beside this file, one dated document per run —
-[2026-07-29-roi-frame-rate.md](2026-07-29-roi-frame-rate.md) is the first.
+Results live beside this file, one dated document per configuration, each holding
+only that configuration's own numbers:
+[2026-07-29-roi-frame-rate-physical.md](2026-07-29-roi-frame-rate-physical.md) (bare-metal
+host), [2026-08-25-roi-frame-rate-vm-asmedia-bl1101ad01.md](2026-08-25-roi-frame-rate-vm-asmedia-bl1101ad01.md)
+(KVM guest `bl1101ad01`, detector on an ASMedia ASM2142 passthrough controller — the
+configuration that deadlocked) and
+[2026-08-26-roi-frame-rate-vm-renesas-bl1101ad01.md](2026-08-26-roi-frame-rate-vm-renesas-bl1101ad01.md)
+(same guest, Renesas uPD720202 controller — clean, bare-metal speed). The three are
+put side by side in [comparison.md](comparison.md); keep comparisons there, not in the
+per-configuration files. Name new ones `<date>-roi-frame-rate-<host-or-config>.md`.
 
 ## Quick version
 
@@ -39,7 +47,7 @@ varies only height. That is not an arbitrary choice on their part: this is a rol
 shutter, frame rate goes as 1/height, and narrowing the width buys very little. Test
 the same way or the numbers are not comparable.
 
-## Five things that will waste your afternoon
+## Eight things that will waste your afternoon
 
 Every one of these cost real time the first time round.
 
@@ -74,6 +82,41 @@ At 3726 fps the period is 268 µs. The script sets 20.64 µs (2 × the 10.32 µs
 row time), safely below every point in the table. If you see a rate pinned near
 `1/exposure`, this is why.
 
+**6. Stopping after a fast point can deadlock the IOC — and the *next* point, not
+this one, is where you will notice.** `Acquire=0` after acquiring at 32 or 8 rows — and
+once at 128 — has left the camera not completing USB transfers, which hangs whichever
+SDK call the driver has in flight under its asyn port lock (`TUCAM_Cap_Stop`, or the
+0.5 s temperature poll). Nothing errors. The next invocation fails with `SizeY did not
+take`, which sends you at the ROI logic, the camera, or its firmware — it is none of
+those; the write never reached the driver. The script now proves the driver is
+alive after every stop with a write that must round-trip (an `ArrayCounter` reset) —
+`DetectorState_RBV` alone can read `Idle` while deadlocked — and exits 2 pointing at
+[../stop-deadlock.md](../incidents/stop-deadlock.md) if it does not. Recovery is `SIGKILL`
+plus a VM reboot (the kill wedges the camera; neither a USB device rebind nor an xhci
+controller reset is enough — only a reboot has worked).
+**Run the small heights last** so a deadlock costs nothing already measured.
+
+**7. In continuous mode, `DroppedArrays` counts frames that arrive *after* the capture
+is complete — and they look like data loss.** The camera keeps streaming for the
+~0.5–1 s it takes the plugin to close a 1.7 GB file; those frames overflow the 21-deep
+queue and are counted. Every file still holds its full `NumCapture`. Measured
+2026-08-26 with time-stamped monitors: the first drop always came *after*
+`NumCaptured == N`. Related: the wall-clock fps of a write point includes a fixed ~0.3–0.6 s of
+camera start-up and file close (2026-08-26, Multiple mode), so a 6 s run understates
+the writer by 6–9 % and a 27 s run by 5 %; it is overhead, not a per-frame cost. And neither `HDF1:IOSpeed` nor
+`HDF1:ExecutionTime` measures the pipeline (one times `H5Dwrite` only, the other the
+queueing callback), so do not diagnose with them. The script now acquires exactly N
+frames in write mode (`ImageMode = Multiple`), which makes `DroppedArrays` mean what
+it says, and reports a stalled capture instead of waiting 60 s for it.
+
+**8. A perfect-looking file can hold no image at all.** Every counter, size and
+timestamp in the 2026-08-26 sweep was exactly right, and every pixel was a
+camera-generated test ramp (`mean=32640.0` on every frame). No PV shows this — the
+driver, the plugins and the script all see a frame of the right size arriving at the
+right rate. Look at pixel statistics of at least one frame per session with
+[h5check.c](../../tools/h5check/h5check.c) (below) before trusting anything about *content*; rate and
+loss figures are unaffected either way.
+
 Two smaller ones: readbacks lag, so poll `SizeY_RBV`/`ArraySizeY_RBV` until they
 match rather than sleeping and hoping; and the first acquire after IOC start
 sometimes produces nothing, so the script retries the priming frame up to three
@@ -91,48 +134,52 @@ pre-flight check reports the effective list when nothing answers.
 
 `NumCaptured` and `DroppedArrays` say the plugin thinks it wrote everything. Check
 the file actually holds the frames — a compressed or truncated file will still
-report a clean capture:
+report a clean capture — **and check that the frames hold an image.** On 2026-08-26
+a complete, structurally perfect sweep turned out to contain a camera-generated test
+ramp instead of sensor data, and nothing upstream of a pixel-level look could have
+told anyone.
 
 ```bash
 # sizes must equal frames x width x height x 2, plus a little HDF5 metadata
 ls -l <outdir>/perf*.h5
 ```
 
-For shape, read it back with an HDF5 build that is *not* the IOC's — that also
-catches a stream written by a mismatched zlib. ADSupport ships one:
-
-```c
-/* h5dims.c */
-#include <hdf5.h>
-#include <stdio.h>
-int main(int argc, char **argv){
-    hid_t f = H5Fopen(argv[1], H5F_ACC_RDONLY, H5P_DEFAULT);
-    hid_t d = H5Dopen2(f, "/entry/data/data", H5P_DEFAULT);
-    hid_t s = H5Dget_space(d);
-    hsize_t dm[3] = {0,0,0};
-    int n = H5Sget_simple_extent_dims(s, dm, NULL);
-    printf("rank=%d dims=[", n);
-    for (int i = 0; i < n; i++) printf("%llu%s", (unsigned long long)dm[i], i<n-1?" x ":"");
-    printf("]\n");
-    return 0;
-}
-```
+[h5check.c](../../tools/h5check/h5check.c) reads a file back with an HDF5 build that is *not* the IOC's
+(ADSupport ships one — which also catches a stream written by a mismatched zlib) and
+prints, per file: shape, type and chunking; min/max/mean/zero-fraction of the first,
+middle and last frame; whether `NDArrayUniqueId` runs 1 … N without gaps; and the frame
+rate from the camera timestamps stored in the file — an independent check on the
+script's wall-clock figure.
 
 ```bash
-S=/opt/epics/synApps/support/areaDetector-R3-14/ADSupport
-gcc -O1 -o h5dims h5dims.c -I$S/include -I$S/include/os/Linux \
+S=/usr/local/epics/support/areaDetector/ADSupport      # or your ADSupport
+gcc -O2 -o h5check ../../tools/h5check/h5check.c -I$S/include/os/Linux \
     -L$S/lib/linux-x86_64 -lhdf5 -lzlib -lsz -Wl,-rpath,$S/lib/linux-x86_64
-./h5dims <outdir>/perf4096_000.h5      # expect [frames x height x 4096]
+for f in <outdir>/perf*.h5; do ./h5check $f; done
 ```
+
+What good looks like: dims `[frames x height x 4096]`, `uint16`, `UniqueId … missing=0`,
+timestamp fps within a few percent of the acquire-only figure, and pixel statistics
+that look like a **dark sensor**: mean of a few tens of ADU (~68 at 50 ms on this unit,
+see [../dhyana-xfxv4040bsi.md](../camera/dhyana-xfxv4040bsi.md)), max in the hundreds to low
+thousands (hot pixels), zero fraction essentially nil, and the numbers *different*
+from frame to frame. What bad looks like: `min=0 max=65280 mean=32640.0 zeros=0.39%`
+on every frame — a 256-level ramp in the high byte, the camera's test pattern.
 
 ## Status of this script
 
 The measurement logic is the code that produced the
-[2026-07-29 results](2026-07-29-roi-frame-rate.md). What has **not** been re-run
-end to end is this packaged version, because the detector was powered down for
-beamline maintenance shortly afterwards. Its pre-flight, geometry and CA handling
-are verified; the acquire and write paths are unchanged from the run that produced
-the numbers but deserve one confirming pass when the camera is back.
+[2026-07-29 results](2026-07-29-roi-frame-rate-physical.md), and it has since been
+re-run end to end on `bl1101ad01` (2026-08-25 and 2026-08-26, KVM guest — see the two
+VM results documents beside this file). The acquire-only path reproduced cleanly at all nine
+heights. The write path exposed one weakness in the script itself: the prime check
+accepted a stale `ArraySizeY_RBV` and so could pass without a frame, which masked a
+dead driver — it now requires `ArrayCounter_RBV` to advance. The same run found the
+stop deadlock (thing 6 above); the script now fails fast on it. The timing and rate
+calculations are unchanged from the run that produced the physical-host numbers, with
+one deliberate method change on 2026-08-26: write mode acquires exactly N frames
+(`ImageMode = Multiple`) rather than running continuously and stopping after
+`Capture = Done`, so post-capture frames no longer inflate `DroppedArrays` (thing 7).
 
 ## Clean up
 
