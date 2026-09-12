@@ -32,6 +32,9 @@ streaming to disk for minutes with every HDF5 file verified inside.
 ⁴ Hardware state, not software: the dark-frame mean reads ~1650 ADU where ~68 is expected; to be checked at the detector.
 
 Run times: ADAxisSXR40 static 18:52, smoke tier 18:18, writer error paths and workflow 17:33, files / robustness / performance / compat and the one full-tier driver test 16:23, stress 18:07 to 18:17 and provoke 17:59. ADTucsen: stress 18:40 to 18:51, provoke 18:51, full tier 18:51 to 18:58. All on 2026-09-11.
+A redundant smoke rerun on ADTucsen at 19:00 (259 passed) had one teardown error, not a test
+failure: the harness's restore of `SizeY` to 32 did not take right after a stop. Two immediate
+reruns of the same test under the same starting ROI restored cleanly; noted as a one-off.
 
 ## Stress tier: both drivers under sustained load
 

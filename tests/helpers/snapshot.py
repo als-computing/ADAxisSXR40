@@ -71,7 +71,9 @@ def safe_stop(ca: CA) -> None:
         pass
     for rel in ("HDF1:Capture",):
         try:
-            if ca.connect(rel, timeout=1.0):
+            # Only when a capture is actually running: writing Capture 0 to an idle plugin in
+            # Single mode logs "NDPluginFile:doCapture ERROR: capture not supported in Single mode".
+            if ca.connect(rel, timeout=1.0) and ca.get_int(rel + "_RBV") != 0:
                 ca.put(rel, 0, wait=False)
         except Exception:  # noqa: BLE001
             pass
