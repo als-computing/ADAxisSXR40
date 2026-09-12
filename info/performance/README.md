@@ -1,5 +1,9 @@
 # How to re-run the performance test
 
+> The script now lives in [`tests/performance/roi-rate-test.sh`](../../tests/performance/roi-rate-test.sh)
+> (moved 2026-09-11; a pytest wrapper there checks each height against the numbers recorded
+> here). This folder keeps the method and the dated results.
+
 The AXIS test report §3.1 (`info/manuals/AXIS-SXR-40_USB3_702_Test_Report_Rev1/`)
 tabulates frame rate against ROI height. This directory holds the method for
 checking those figures through the EPICS IOC, and for measuring what file writing
@@ -16,6 +20,13 @@ configuration that deadlocked) and
 put side by side in [comparison.md](comparison.md); keep comparisons there, not in the
 per-configuration files. Name new ones `<date>-roi-frame-rate-<host-or-config>.md`.
 
+Sustained-load results come from the test suite's stress tier: `tests/run.sh stress all
+--record` writes `<date>-stress-<driver>-<host>.md` here (Conditions table naming the driver and IOC,
+one row per HDF5 streaming run with camera/writer rates, drops, queue and pool peaks, RSS,
+file check, plus the long-run, capture-cycle, viewer and provoke summaries). Method and
+assertions: [tests/stress/README.md](../../tests/stress/README.md). The first such file is
+[2026-09-11-stress-adaxissxr40-bl1101ad01.md](2026-09-11-stress-adaxissxr40-bl1101ad01.md).
+
 ## Quick version
 
 ```bash
@@ -25,8 +36,8 @@ cd iocs/axisSXR40IOC/iocBoot/iocAxisSXR40
 
 # 2. wait for it, then one point at a time
 export PATH=/opt/epics/epics-base/bin/linux-x86_64:$PATH
-./roi-rate-test.sh 4096 90          # acquire + HDF5 write
-./roi-rate-test.sh 4096 90 nowrite  # acquire only
+../../tests/performance/roi-rate-test.sh 4096 90          # acquire + HDF5 write
+../../tests/performance/roi-rate-test.sh 4096 90 nowrite  # acquire only
 ```
 
 The whole sweep, both modes, is nine heights: 4096 2048 1024 512 256 128 64 32 8.

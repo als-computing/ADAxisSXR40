@@ -48,3 +48,10 @@ info/labview-vs-epics-analysis/labview-screenshots/
 *~
 *.swp
 *_BAK.adl
+
+# Test suite scratch (tests/README.md): venv, built h5check, junit/report output
+tests/.venv/
+tests/.build/
+tests/.results/
+__pycache__/
+.pytest_cache/

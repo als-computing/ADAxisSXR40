@@ -179,12 +179,35 @@ into `db/`, and builds the example IOC,
 
 ```bash
 cd iocs/axisSXR40IOC/iocBoot/iocAxisSXR40
-../../bin/linux-x86_64/axisSXR40App st.cmd
+./start_epics.sh          # or: ../../bin/linux-x86_64/axisSXR40App st.cmd
 ```
+
+**This IOC is a drop-in for the ADTucsen deployment on the same host.** It serves the
+same PV prefix (`XV4040:`) and asyn port name (`TUCSEN`) as `ioc-xv4040.service`, so
+screens, panels and Bluesky devices work unchanged under either driver. Only one of the
+two may run at a time: `start_epics.sh` refuses to start while `ioc-xv4040` is active.
+How to run this IOC as a systemd service and swap drivers in two commands:
+[info/systemd/README.md](info/systemd/README.md).
 
 Read the capability summary the IOC prints at startup —
 `reportCapabilitySupport()` probes every parameter the driver drives and is
 the authoritative statement of what the connected camera implements.
+
+## Functional tests
+
+```bash
+tests/run.sh            # smoke tier, ~90 s: no disk writes, no stress; restores every setting it touches
+tests/run.sh full       # adds HDF5/TIFF writes, robustness, workflow, performance regression, compat
+tests/run.sh stress     # sustained-load tier by group (minutes, tens of GB, files deleted as checked)
+tests/run.sh static     # no IOC needed: template vs driver, request files, startup files, docs
+tests/run.sh capture    # dump every PV of the IOC that is serving into tests/compat/baselines/
+```
+
+The suite detects which driver is serving `XV4040:` and applies that driver's
+expectations, so it runs against Damon English's `ioc-xv4040` (ADTucsen) as well; the
+tests of the fork's fixes then become expected failures naming the ADTucsen defect. It
+never starts or stops a service. The `image/` tests are expected to fail while the
+camera emits its synthetic ramp (known gaps, TODO §8). Details: [tests/README.md](tests/README.md).
 
 ## What differs from ADTucsen
 

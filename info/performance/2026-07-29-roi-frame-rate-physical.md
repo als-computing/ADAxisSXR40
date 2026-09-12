@@ -4,7 +4,7 @@ First full sweep through the EPICS IOC, checking the AXIS test report §3.1 figu
 and measuring what HDF5 streaming to disk costs on top.
 
 Method and the traps involved: [README.md](README.md). Re-run with
-[roi-rate-test.sh](roi-rate-test.sh).
+[roi-rate-test.sh](../../tests/performance/roi-rate-test.sh).
 
 ## Conditions
 

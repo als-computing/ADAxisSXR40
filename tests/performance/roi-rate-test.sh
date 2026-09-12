@@ -23,7 +23,7 @@ N=${2:?frame count required}
 MODE=${3:-write}
 OUT=${4:-/home/$USER/axis-perf-tmp}
 
-P=${AXIS_PREFIX:-AXIS:SXR40:}
+P=${AXIS_PREFIX:-XV4040:}   # since 2026-09-10 both IOCs serve XV4040:; override with AXIS_PREFIX
 
 # The detector IOC runs on THIS machine, so localhost has to be in the CA search
 # path. A site environment normally points EPICS_CA_ADDR_LIST at a gateway -- here
@@ -212,11 +212,16 @@ cput "${P}cam1:Acquire" 0
 
 NC=$(cget "${P}HDF1:NumCaptured_RBV")
 DR=$(cget "${P}HDF1:DroppedArrays_RBV")
-SZ=$(stat -c %s "$OUT/perf${H}_000.h5" 2>/dev/null || echo 0)
+# Ask the plugin which file it wrote rather than assuming perf<H>_000.h5: with
+# AutoIncrement on and files from an earlier run still in $OUT, the writer moves on
+# to _001, _002 ... and the _000 name is a stale file from another day. (2026-09-10:
+# that stale file is what got size-reported and h5check'ed, and then deleted.)
+FILE=$(caget -w 5 -S "${P}HDF1:FullFileName_RBV" 2>/dev/null | sed 's/^[^ ]* *//')
+SZ=$(stat -c %s "$FILE" 2>/dev/null || echo 0)
 python3 -c "
 nc=$NC; dt=$T1-$T0
 print(f'  h=$H  +HDF5 write   {nc/dt:9.1f} fps  {nc*4096*$H*2/dt/1e6:6.0f} MB/s  '
-      f'{nc}/$N frames  dropped=$DR  file={$SZ/1e6:.1f} MB')"
+      f'{nc}/$N frames  dropped=$DR  file={$SZ/1e6:.1f} MB  $FILE')"
 if [ "${NC:-0}" -le 0 ]; then
     echo "  h=$H FAILED: capture wrote NO frames -- camera or driver dead (see info/incidents/stop-deadlock.md)"
     exit 4

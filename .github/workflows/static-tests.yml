@@ -1,0 +1,15 @@
+# The only tier that needs no hardware and no EPICS installation: the static/ folder
+# parses the source tree (template vs driver, request files, startup and systemd files,
+# documentation links, the helpers). Everything else in tests/ needs the live IOC.
+name: static tests
+on: [push, pull_request]
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pyepics numpy
+      - run: cd tests && python -m pytest static -q
