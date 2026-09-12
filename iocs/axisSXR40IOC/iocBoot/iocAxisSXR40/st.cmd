@@ -1,4 +1,18 @@
+#!/usr/local/epics/support/areaDetector/ADAxisSXR40/iocs/axisSXR40IOC/bin/linux-x86_64/axisSXR40App
+#
 # st.cmd -- AXIS-SXR-40 IOC
+#
+# COMPATIBLE WITH THE ioc-xv4040 (ADTucsen) DEPLOYMENT. This IOC uses the same PV
+# prefix and asyn port name as /usr/local/epics/iocs/xv4040/st.cmd (Damon English,
+# 2026-08), so clients cannot tell which driver is serving. Only one of the two IOCs
+# may run at a time -- the SDK opens the camera exclusively and both bind pvAccess
+# port 5075. start_epics.sh and info/systemd/ioc-axissxr40.service refuse to start
+# while ioc-xv4040 is active. Settings borrowed from that file are marked
+# "(as ioc-xv4040)"; see info/porting/ADAxisSXR40-vs-ADTucsen.md section 6 for the
+# side-by-side and the reasons the remaining values differ.
+#
+# The shebang above lets this file be executed directly (the process is then named
+# st.cmd, as it is for ioc-xv4040); start_epics.sh still works too.
 #
 # Single canonical startup file. This module builds for one architecture only
 # (iocBoot/iocAxisSXR40/Makefile hardcodes ARCH = linux-x86_64), so there is no
@@ -23,10 +37,13 @@ errlogInit(20000)
 dbLoadDatabase("$(TOP)/dbd/axisSXR40App.dbd")
 axisSXR40App_registerRecordDeviceDriver(pdbbase)
 
-# Prefix for all records
-epicsEnvSet("PREFIX", "AXIS:SXR40:")
-# The port name for the detector
-epicsEnvSet("PORT",   "AXISSXR40")
+# Prefix for all records (as ioc-xv4040). Every screen, panel, script and the
+# pvAccess image channel XV4040:Pva1:Image work unchanged under either driver.
+epicsEnvSet("PREFIX", "XV4040:")
+# The asyn port name for the detector (as ioc-xv4040). Appears in cam1:PortName_RBV
+# and in every plugin's NDArrayPort/_RBV, which ophyd validates and autosave stores,
+# so re-wiring the plugin chain keeps working when the driver is swapped.
+epicsEnvSet("PORT",   "TUCSEN")
 # The camera number in the system
 epicsEnvSet("CAMERA", "0")
 # The queue size for all plugins. A queued NDArray is a refcounted pointer, not a
@@ -43,19 +60,22 @@ epicsEnvSet("YSIZE",  "4096")
 # and NDPluginAttribute plugins. This is a time series length, unrelated to image
 # size -- it does not need to track XSIZE/YSIZE.
 epicsEnvSet("NCHANS", "2048")
-# The maximum PreCount allowed in NDPluginCircularBuff. Nothing is preallocated,
-# but 500 frames of this detector would be 16 GB if a user asked for it.
-epicsEnvSet("CBUFFS", "500")
+# The maximum PreCount allowed in NDPluginCircularBuff (as ioc-xv4040). Nothing is
+# preallocated, but the stock 500 frames of this detector would be 16 GB if a user
+# asked for it and would hit the maxMemory cap below; 20 frames is 640 MB.
+epicsEnvSet("CBUFFS", "20")
 # The maximum number of threads for plugins which can run in multiple threads
 epicsEnvSet("MAX_THREADS", "8")
 # The search path for database files
 epicsEnvSet("EPICS_DB_INCLUDE_PATH", "$(ADCORE)/db")
 
-# EPICS_CA_MAX_ARRAY_BYTES is deliberately not set. EPICS Base 7.0.10 defaults to
+# EPICS_CA_MAX_ARRAY_BYTES (as ioc-xv4040). EPICS Base 7.0.10 defaults to
 # EPICS_CA_AUTO_ARRAY_BYTES=YES, which sizes CA network buffers automatically and
-# ignores it (see epics-base/documentation/RELEASE-3.16.md). Only a client or IOC
-# that explicitly sets EPICS_CA_AUTO_ARRAY_BYTES=NO needs
-# EPICS_CA_MAX_ARRAY_BYTES >= 33554432 (4096*4096*2) to read image1:ArrayData.
+# ignores this (see epics-base/documentation/RELEASE-3.16.md), so it only matters
+# for a client or IOC that sets EPICS_CA_AUTO_ARRAY_BYTES=NO. Set anyway: harmless,
+# and it keeps Damon's README literally true for this IOC. Images should go over
+# PVA (Pva1:Image); a 32 MiB CA waveform is a fallback.
+epicsEnvSet("EPICS_CA_MAX_ARRAY_BYTES", "40000000")
 
 asynSetMinTimerPeriod(0.001)
 
@@ -72,7 +92,8 @@ asynSetMinTimerPeriod(0.001)
 # client) accumulates frames at ~288 MB/s. This host has 15 GB, so that reaches the
 # OOM killer in well under a minute and takes the IOC down mid-acquisition.
 #
-#   maxMemory 1610612736 = 1.5 GiB = 48 frames = ~5 s of full-rate acquisition
+#   maxMemory 2000000000 = 2 GB = ~59 frames = ~7 s of full-rate acquisition
+#   (as ioc-xv4040; was 1.5 GiB here -- either is fine on this 15 GB host)
 #
 # Since ADCore R3-3 this ONE number bounds the driver *and every downstream plugin*
 # together -- plugins allocate from the driver's pool, not their own (ADCore
@@ -93,7 +114,7 @@ asynSetMinTimerPeriod(0.001)
 # updates. It reads correctly only after
 #   caput $(PREFIX)cam1:PoolPollStats 1 ; caput $(PREFIX)cam1:PoolMaxMem.PROC 1
 # PoolUsedMem and PoolAllocBuffers are I/O Intr and do track live.
-axisSXR40Config("$(PORT)", $(CAMERA), 0x1, 0, 1610612736, 0, 0)
+axisSXR40Config("$(PORT)", $(CAMERA), 0x1, 0, 2000000000, 0, 0)
 
 # axisSXR40.template includes ADBase.template, so ADBase is not loaded separately
 dbLoadRecords("$(ADAXISSXR40)/db/axisSXR40.template", "P=$(PREFIX),R=cam1:,PORT=$(PORT),ADDR=0,TIMEOUT=1")
@@ -110,11 +131,21 @@ dbLoadRecords("$(ADCORE)/db/NDStdArrays.template", "P=$(PREFIX),R=image1:,PORT=I
 # Load all other plugins using commonPlugins.cmd
 < $(ADCORE)/iocBoot/commonPlugins.cmd
 set_requestfile_path("$(ADAXISSXR40)/axisSXR40App/Db")
-# commonPlugins.cmd leaves set_requestfile_path("$(CALC)/db") commented out, so
-# every save cycle logged "save_restore:readReqFile: unable to open file
-# sseq_settings.req" 11 times. The file is in $(CALC)/db; adding the path is
-# harmless and silences it.
-set_requestfile_path("$(CALC)/db")
+# NDStats_settings.req pulls in sseq_settings.req three times per Stats plugin, and
+# commonPlugins.cmd registers no calc path, so every save cycle logged
+# "save_restore:readReqFile: unable to open file sseq_settings.req" 15 times. The
+# file lives ONLY in $(CALC)/calcApp/Db on this host -- calc does not install it
+# into $(CALC)/db, which is where an earlier version of this line pointed and why
+# the warning survived. Same path ioc-xv4040 uses.
+set_requestfile_path("$(CALC)/calcApp/Db")
+# Autosave resilience (as ioc-xv4040): a dated copy of auto_settings.sav at every
+# boot, plus three rotating copies written every 300 s, so a truncated or corrupted
+# settings file is recoverable instead of costing every setting. Status PVs, if
+# save_restoreStatus.db is ever loaded, take the IOC prefix.
+save_restoreSet_status_prefix("$(PREFIX)")
+save_restoreSet_DatedBackupFiles(1)
+save_restoreSet_NumSeqFiles(3)
+save_restoreSet_SeqPeriodInSeconds(300)
 
 asynSetTraceIOMask("$(PORT)",0,4)
 # reportCapabilitySupport() logs its summary at ASYN_TRACE_ERROR, so the one line
@@ -146,3 +177,13 @@ dbpf("$(PREFIX)netCDF1:FileTemplate", "%s%s_%3.3d.nc")
 
 # save things every thirty seconds
 create_monitor_set("auto_settings.req", 30, "P=$(PREFIX)")
+
+# Come up ready to view (as ioc-xv4040). areaDetector defaults ArrayCallbacks and
+# every plugin's EnableCallbacks to OFF, so without this a fresh IOC acquires but
+# shows nothing -- which reads as a broken detector. Runs after iocInit and after
+# autosave's restore passes, so it wins; the cost is that these three plugins are
+# forced on at every boot even if someone disabled them.
+dbpf("$(PREFIX)cam1:ArrayCallbacks",     "1")
+dbpf("$(PREFIX)image1:EnableCallbacks",  "1")
+dbpf("$(PREFIX)Pva1:EnableCallbacks",    "1")
+dbpf("$(PREFIX)Stats1:EnableCallbacks",  "1")

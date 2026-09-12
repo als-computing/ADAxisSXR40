@@ -1,9 +1,10 @@
 # Settings restored on IOC restart, saved every 30 s by the create_monitor_set
 # call at the end of st.cmd.
 #
-# axisSXR40_settings.req is found via set_requestfile_path("$(ADAXISSXR40)/axisSXR40App/Db");
+# axisSXR40_settings.req is found via the ADAXISSXR40/axisSXR40App/Db request path;
 # the NDStdArrays and commonPlugin request files come from the paths
-# commonPlugins.cmd adds ($(ADCORE)/db and $(ADCORE)/iocBoot).
+# commonPlugins.cmd adds (ADCORE/db and ADCORE/iocBoot). Note: autosave macro-expands
+# comment lines too, so never write a dollar-paren macro reference in this file.
 #
 # axisSXR40_settings.req still lists the 8 parameters this camera does not
 # implement (auto-exposure, CMS/HDR image mode, defect correction, enhance, black

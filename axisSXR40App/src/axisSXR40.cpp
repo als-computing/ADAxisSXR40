@@ -409,7 +409,10 @@ axisSXR40::axisSXR40(const char *portName, int cameraId, int traceMask, int maxB
     setIntegerParam(NDArraySizeZ, 0);
     setStringParam(ADStringToServer, "<not used by driver>");
     setStringParam(ADStringFromServer, "<not used by driver>");
-    setStringParam(ADManufacturer, "AxisSXR40");
+    /* "Tucsen", not "AxisSXR40": the manufacturer of the camera this driver talks to
+     * is Tucsen, and ADTucsen reports the same string, so Manufacturer_RBV reads
+     * identically under either driver (the IOCs are meant to be interchangeable). */
+    setStringParam(ADManufacturer, "Tucsen");
     epicsSnprintf(versionString, sizeof(versionString), "%d.%d.%d",
             DRIVER_VERSION, DRIVER_REVISION, DRIVER_MODIFICATION);
     setStringParam(NDDriverVersion, versionString);

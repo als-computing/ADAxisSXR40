@@ -1,6 +1,5 @@
 $(P)$(R)BitDepth
 $(P)$(R)FrameSpeed
-$(P)$(R)BitDepth
 $(P)$(R)BinMode
 $(P)$(R)GainMode
 $(P)$(R)AutoExposure

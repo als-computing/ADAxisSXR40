@@ -1,0 +1,67 @@
+# systemd unit for the ADAxisSXR40 IOC -- a mirror of /etc/systemd/system/ioc-xv4040.service
+# (Damon English, 2026-08) with the paths, user, service name and console port changed, plus
+# a start guard, so the two IOCs can be swapped by stopping one service and starting the other.
+#
+# NOT installed by the build. To install or update (host-level action, outside this module):
+#   sudo cp ioc-axissxr40.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl stop ioc-xv4040          # the camera and PVA port 5075 are exclusive
+#   sudo systemctl start ioc-axissxr40
+# Do NOT "systemctl enable" it while ioc-xv4040 is the boot-time default.
+#
+# ExecStart runs ioc-axissxr40-run.sh, which first runs ioc-axissxr40-guard.sh -- refusing
+# to start while ioc-xv4040 is active or activating, or while anything already serves
+# pvAccess on TCP 5075, with the reason written to the journal and to
+# /var/log/areadetector/axisSXR40-guard.log -- and then execs procServ.
+# This is deliberately NOT Conflicts=ioc-xv4040.service, which would silently stop
+# Damon's service; deciding which IOC owns the camera is an operator action.
+# The guard exits 75 when it refuses; the launcher passes that up as the main process's
+# exit code, and RestartPreventExitStatus=75 below stops Restart=always from re-running
+# it every 5 s forever. (It is NOT in ExecStartPre because RestartPreventExitStatus=
+# applies only to the main process -- an ExecStartPre failure IS retried.)
+
+[Unit]
+Description=EPICS IOC - AXIS-SXR-40 / Tucsen Dhyana XV4040BSI (ADAxisSXR40, areaDetector)
+Documentation=file:///usr/local/epics/support/areaDetector/ADAxisSXR40/README.md
+# Ordered after ioc-xv4040 so that, if both were ever started in one boot, the
+# guard runs after his has finished activating rather than during it.
+After=network-online.target ioc-xv4040.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gabrielgazolla
+Group=gabrielgazolla
+WorkingDirectory=/usr/local/epics/support/areaDetector/ADAxisSXR40/iocs/axisSXR40IOC/iocBoot/iocAxisSXR40
+
+# --- pvAccess is the primary transport for images (as ioc-xv4040) -------------
+Environment=EPICS_PVAS_INTF_ADDR_LIST=0.0.0.0
+Environment="EPICS_PVAS_BEACON_ADDR_LIST=131.243.77.255 192.168.50.255"
+Environment=EPICS_PVA_AUTO_ADDR_LIST=YES
+Environment=EPICS_PVA_SERVER_PORT=5075
+Environment=EPICS_PVA_BROADCAST_PORT=5076
+# Channel Access kept working for legacy clients; images should go over PVA.
+Environment=EPICS_CA_AUTO_ADDR_LIST=YES
+Environment=EPICS_CA_MAX_ARRAY_BYTES=40000000
+
+# Console log goes to /var/log/areadetector/axisSXR40.log. systemd creates that
+# directory at every start, owned by User= above, so no sudo mkdir/chown is needed
+# and nothing under /var/log/epics (owned by the xv4040 deployment) is touched.
+# The directory name is deliberately generic: other areaDetector IOC logs on this
+# host, including xv4040's if it ever moves, have a natural home here. The guard
+# writes its refusals to axisSXR40-guard.log in the same directory.
+LogsDirectory=areadetector
+
+# Launcher: guard, then procServ on telnet localhost:20001 (ioc-xv4040 uses 20000;
+# no --allow, so the console is reachable only from this host).
+ExecStart=/usr/local/epics/support/areaDetector/ADAxisSXR40/info/systemd/ioc-axissxr40-run.sh
+
+Restart=always
+RestartSec=5
+# A guard refusal (exit 75) is a deliberate no-start, not a crash: do not retry it.
+RestartPreventExitStatus=75
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

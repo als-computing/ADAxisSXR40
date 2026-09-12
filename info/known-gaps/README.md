@@ -12,6 +12,19 @@ evidence and repro steps in [TODO.md](TODO.md); this file is the summary view.
   this VM looked at pixel values before that day. Frame-rate and loss measurements
   stand (right size, real path); image content from this VM does not. Power-cycle and
   re-check with `tools/h5check` before trusting any image. [TODO.md](TODO.md) §8.
+  **Still present 2026-09-10** under ADAxisSXR40 started by `ioc-axissxr40.service`
+  (Renesas controller, after the VM reboots and card remap): 10-frame HDF5 stream, every
+  frame min 0 / max 65280 / mean 32640.0, unique ids contiguous, 8.7 fps. Same camera
+  state under both drivers, so the fix is not in software.
+  **Gone on 2026-09-11, without a power cycle.** `tests/image/` saw the ramp at 15:50 and
+  real sensor data at 16:10 (min 251, max 39132, mean 1650, sigma 182, frames differing).
+  In between, the first full-tier test run had cycled `BinMode` 1 → 2 → 0
+  (`TUIDC_RESOLUTION`) and stopped/started acquisition 20 times at 32 rows. The binning
+  cycle is the prime suspect for clearing the camera's internal test mode; not yet
+  reproduced deliberately. The mean of ~1650 ADU is far above the ~68 ADU dark baseline
+  in the characterisation notes, so either the sensor is lit or its offset moved:
+  `tests/image/test_dark_frame.py::test_dark_frame_mean_is_tens_of_adu` stays an expected
+  failure until someone checks at the detector.
 
 - **`Acquire=0` after high-rate acquisition can deadlock the IOC.** Seen at 128, 32 and
   8 rows; not in 20 stops at ≥ 256. After the stop the camera stops completing USB
@@ -88,8 +101,12 @@ evidence and repro steps in [TODO.md](TODO.md); this file is the summary view.
   the 8 unsupported controls removed, `TECEnable` and the ring counters added — but
   `op/ui/autoconvert/*.ui` are generated files and need regenerating with `adl2ui`,
   which is not installed here. caQtDM users still see the old layout.
-- **`medm` itself is not installed on the development host**, so
-  `start_epics.sh`'s GUI half silently does nothing and only the IOC starts.
+- **No screen launcher of our own.** `start_epics.sh` used to try to open `medm`,
+  which is not installed as a package here; that half was removed on 2026-09-10 when the
+  script became a pure IOC launcher mirroring `ioc-xv4040`'s environment. Damon's
+  `medm-xv4040` launcher (a from-source MEDM under `/usr/local/epics/extensions`) opens
+  the ADTucsen screen with `P=XV4040:,R=cam1:` and works against this IOC too, since
+  the record names are the same; only our four extra records are missing from it.
 - ~~9 SDK functions unverified~~ — **now all verified working** by the
   `ControlProbe` utility (`examples/cpp/ControlProbe` in the companion
   `AXIS-SXR-40-SDK` repository), including the load-bearing `Buf_AbortWait`
@@ -107,3 +124,38 @@ evidence and repro steps in [TODO.md](TODO.md); this file is the summary view.
   overlap will differ.
 - **`getcwd` return value unchecked** at `axisSXR40App/src/axisSXR40.cpp:388` —
   inherited, emits a compiler warning, harmless but worth tidying.
+- **`cam1:TimeStamp_RBV`, `cam1:EpicsTSSec_RBV`/`EpicsTSNsec_RBV` and `cam1:UniqueId_RBV`
+  stay at 0.** Found by `tests/acquire/test_timestamps.py` (2026-09-11). The driver stamps
+  every NDArray correctly (the plugins' `image1:TimeStamp_RBV` etc. advance and track the
+  host clock, and HDF5 files carry the timestamps), but never calls
+  `setDoubleParam(NDTimeStamp)` / `setIntegerParam(NDUniqueId, NDEpicsTSSec, NDEpicsTSNsec)`
+  after a frame, so the camera record's own copies are never published. Inherited from
+  ADTucsen, identical there. Small fix in `imageGrabTask()` after `grabImage()`; the test
+  is an expected failure until then.
+- **`ReverseY` 'does not take' was ADTucsen behaviour, not the camera's.** The SDK
+  answers the `TUIDC_VERTICAL` write with `TUCAMRET_NO_RESOURCE` but applies it. Our
+  `setCapability()` verifies by readback and accepts, so `ReverseY` round-trips 1 and 0 on
+  ADAxisSXR40; ADTucsen treats the code as failure and forces the parameter back to 0, so
+  its readback stays 0. Both measured 2026-09-11 by `tests/driver/test_fixes.py::
+  test_reversey_roundtrip` (passes on ours, xfails on his). Supersedes TODO §3's reading.
+- **ROI alignment: the camera rounds width (8) and `MinX` (4) itself; it does NOT round
+  `SizeY` or `MinY`.** Running `tests/driver/test_roi.py` on ADTucsen (2026-09-11): the
+  width and MinX tests pass there too (camera rounding), while `SizeY` 1006 and `MinY` 14
+  go through unaligned. Only the height/offset-Y alignment is our driver's contribution.
+- **The upstream height-clamp bug is masked.** ADTucsen's `setROI` writes the clamped
+  height into `ADSizeX`, but then calls `Cap_SetROI` with the correct local width and
+  overwrites `ADSizeX` from `Cap_GetROI`, so EPICS never sees the corruption
+  (`test_height_clamp_does_not_touch_width` passes on both drivers). The fork's fix is a
+  correctness fix, not a behaviour change.
+- **`Pva1:Image` monitors with a sub-field request never update.** `pvmonitor -r
+  'field(uniqueId)' XV4040:Pva1:Image` prints the value at connect and nothing more while
+  frames flow (checked 2026-09-11 with `field(uniqueId)`, `field(value)`, `record[queueSize=4]`);
+  the full request receives every frame, and a QSRV record (`cam1:ArrayCounter_RBV`) updates
+  with either request. NDPluginPva / pvDatabase behaviour in ADCore R3-14, identical for
+  both IOCs. Viewers use the full request and are unaffected; scripts that want a cheap
+  frame counter over pvAccess must subscribe to the whole NTNDArray (`tests/helpers/pva_viewer.py`).
+- **Starting a continuous acquisition allocates ~256 MB once** (RSS 587 → 843 MB within the
+  first 30 s at full frame, flat afterwards, released at stop; 8 × 32 MiB, the SDK's
+  transfer buffers rather than the NDArrayPool, whose `PoolUsedMem` does not move). Not a
+  leak: `tests/stress/test_long_continuous.py` measures growth from its first sample and
+  records the start-up allocation. Size the VM with this on top of `maxMemory`.

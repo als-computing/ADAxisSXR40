@@ -92,9 +92,9 @@ usability — see item 3.
 To test, with water confirmed flowing and someone present:
 
 ```
-caput AXIS:SXR40:cam1:TECEnable Enable
+caput XV4040:cam1:TECEnable Enable
 # watch cam1:TemperatureActual (now real °C) fall
-caput AXIS:SXR40:cam1:TECEnable Disable
+caput XV4040:cam1:TECEnable Disable
 ```
 
 The documented setpoint default for this model is 30, i.e. **−20 °C** (range
