@@ -7,6 +7,7 @@ the EPICS `make`; build each by hand as its README says.
 | Tool | What it does | Came from |
 |---|---|---|
 | [h5check/](h5check/) | Reads an areaDetector HDF5 file back with an independent HDF5 build and reports shape, per-frame pixel statistics, `NDArrayUniqueId` continuity and the frame rate from the in-file camera timestamps. The check that found the camera emitting a test pattern instead of images. | [info/performance/README.md](../info/performance/README.md), "Verifying the files are real" |
+| [blueskyTest/](blueskyTest/) | The detector under **bluesky**: an ophyd device (`area_detectors.py`, shaped like bluesky-web's queue-server startup file, HDF5 file store, one file per scan) and `main.py`, which scans a virtual motor against the live IOC and verifies the run's documents and the HDF5 file. Python, own venv via `run.sh`. Passed against ADTucsen 2026-09-14; ADAxisSXR40 at the next swap. | the plan to drive this detector from a bluesky queue-server |
 
 ## h5check and the test suite
 

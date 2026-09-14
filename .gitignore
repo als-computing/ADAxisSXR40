@@ -55,3 +55,6 @@ tests/.build/
 tests/.results/
 __pycache__/
 .pytest_cache/
+
+# bluesky client test (tools/blueskyTest/README.md): its venv
+tools/blueskyTest/.venv/
