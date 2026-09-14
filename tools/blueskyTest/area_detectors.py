@@ -38,6 +38,15 @@ import os
 import time
 from collections import OrderedDict
 
+# ophyd vocabulary used below:
+#   Component / ADComponent  declare a sub-signal or sub-device at a PV suffix (ADComponent adds
+#                            areaDetector niceties such as lazy connection of large arrays)
+#   EpicsSignalRO            a read-only PV;  EpicsSignalWithRBV: a setpoint PV plus its _RBV readback
+#   CamBase / DetectorBase   the standard areaDetector camera record and detector container
+#   SingleTrigger            mixin: trigger() = Acquire 1 and wait for it to return to 0
+#   *_V34                    plugin classes matching the ADCore R3-4+ record layout (we run R3-14)
+#   FileStoreHDF5IterativeWrite  mixin that turns the HDF5 plugin into a bluesky "file store":
+#                            Resource/Datum documents instead of the pixels themselves
 from ophyd import ADComponent as ADCpt
 from ophyd import CamBase, Component as Cpt, DetectorBase, EpicsSignalRO, SingleTrigger
 from ophyd.areadetector.base import EpicsSignalWithRBV as SignalWithRBV
@@ -130,7 +139,9 @@ DTYPE_STR = {"Int8": "|i1", "UInt8": "|u1", "Int16": "<i2", "UInt16": "<u2",
 # 2. CAMERA  (cam1:)
 # =====================================================================================
 class TucsenCam(CamBase):
-    """The camera record, cam1:.
+    """The camera record, cam1:. Each line below is `attribute = Component(kind, "PVSuffix")`:
+    the attribute name is how Python code refers to it, the suffix is appended to the prefix
+    ("XV4040:cam1:" + "FanGear"), and a *WithRBV component pairs the setpoint with its _RBV.
 
     CamBase already provides the areaDetector standard set: acquire, acquire_time,
     acquire_period, num_images, image_mode, trigger_mode, array_callbacks, array_counter,
@@ -180,12 +191,17 @@ class XV4040HDF5Plugin(FileStoreHDF5IterativeWrite, HDF5Plugin_V34):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # `filestore_spec` is the string the base class writes into the Resource document's
+        # "spec" field; readers (tiled, databroker handlers) pick their file reader from it.
         self.filestore_spec = HDF5_RESOURCE_SPEC
 
     # -- resource document: what tiled needs to open the file ----------------------------
     def _generate_resource(self, resource_kwargs):
-        kwargs = dict(resource_kwargs)           # ophyd supplies frame_per_point
-        cam = self.parent.cam
+        """Called once per stage() by the base class, with resource_kwargs={'frame_per_point': N}.
+        The dict becomes the Resource document's "resource_kwargs"; tiled turns them into the
+        parameters of its HDF5 reader. We add what that reader needs and hand the dict on."""
+        kwargs = dict(resource_kwargs)           # copy: never edit the caller's dict
+        cam = self.parent.cam                    # self.parent is the XV4040Detector
         kwargs.update(
             dataset=HDF5_DATASET,                # path of the frame stack inside the file
             swmr=False,                          # NDFileHDF5 does not write in SWMR mode
@@ -199,17 +215,19 @@ class XV4040HDF5Plugin(FileStoreHDF5IterativeWrite, HDF5Plugin_V34):
         image key must carry shape and dtype. ophyd gives shape (num_images, height, width)
         and "dtype_numpy"; the reference file adds "dtype_str" and the shape from the live
         geometry, done here too, Mono only (this sensor has a single color mode)."""
-        ret = super().describe()
-        key = self.parent._image_name
-        if key in ret:
+        ret = super().describe()                 # {data_key: {"source", "dtype", "shape", ...}, ...}
+        key = self.parent._image_name            # "xv4040_image": the data key of the frame datum
+        if key in ret:                           # present only once a trigger has produced a datum
             cam = self.parent.cam
             if cam.color_mode.get(as_string=True) == "Mono":
-                ret[key]["shape"] = [cam.num_images.get(),
-                                     cam.array_size.array_size_y.get(), cam.array_size.array_size_x.get()]
-            dtype_str = DTYPE_STR.get(cam.data_type.get(as_string=True))
+                ret[key]["shape"] = [cam.num_images.get(),                  # frames per point (1)
+                                     cam.array_size.array_size_y.get(),     # rows
+                                     cam.array_size.array_size_x.get()]     # columns
+            dtype_str = DTYPE_STR.get(cam.data_type.get(as_string=True))    # "UInt16" -> "<u2"
             if dtype_str:
-                ret[key].setdefault("dtype_str", dtype_str)
-                ret[key].setdefault("dtype_numpy", dtype_str)
+                # setdefault: add the key only if ophyd did not already provide it
+                ret[key].setdefault("dtype_str", dtype_str)     # older tiled / databroker readers
+                ret[key].setdefault("dtype_numpy", dtype_str)   # current readers
         return ret
 
     # -- warm-up: one frame before the first Stream capture ------------------------------
@@ -230,25 +248,30 @@ class XV4040HDF5Plugin(FileStoreHDF5IterativeWrite, HDF5Plugin_V34):
             4. restore 1-2 in reverse order, also on failure
         """
         cam = self.parent.cam
-        self.enable.set(1).wait()
+        self.enable.set(1).wait()                # HDF1:EnableCallbacks on; .set(...).wait() writes the
+                                                 # PV and blocks until its readback (_RBV) agrees
+        # Remember the current values of everything we are about to change, in the order we
+        # change them, so the finally: block can put them back in reverse order.
         saved = OrderedDict((s, s.get()) for s in (cam.array_callbacks, cam.image_mode, cam.num_images,
                                                    self.auto_save))
         try:
-            self.auto_save.set(0).wait()
-            cam.array_callbacks.set(1).wait()
-            cam.image_mode.set("Single").wait()
-            cam.num_images.set(1).wait()
-            counter0 = cam.array_counter.get()
-            cam.acquire.put(1, wait=False)       # poll rather than wait on completion, so a hung
-            deadline = time.monotonic() + timeout    # IOC gives a clear error, not a silent block
+            self.auto_save.set(0).wait()         # step 1: no stray file from a Single-mode writer
+            cam.array_callbacks.set(1).wait()    # step 2: frames reach the plugins ...
+            cam.image_mode.set("Single").wait()  #         ... one frame per Acquire ...
+            cam.num_images.set(1).wait()         #         ... exactly one
+            counter0 = cam.array_counter.get()   # step 3: frame count before the warm-up frame
+            cam.acquire.put(1, wait=False)       # start; poll below rather than wait on completion,
+            deadline = time.monotonic() + timeout    # so a hung IOC gives an error, not a silent block
             while time.monotonic() < deadline:
+                # done when the camera reports Idle (Acquire back to 0) AND one more frame was
+                # counted; both are needed, Acquire alone is 0 also before the frame starts
                 if cam.acquire.get() == 0 and cam.array_counter.get() > counter0:
                     break
                 time.sleep(0.1)
-            else:
+            else:                                # the while loop ran out of time without break
                 raise TimeoutError(f"{self.name}: warm-up frame did not arrive within {timeout} s")
         finally:
-            for sig, val in reversed(list(saved.items())):
+            for sig, val in reversed(list(saved.items())):   # step 4: restore, last changed first
                 sig.set(val).wait()
 
 
@@ -267,15 +290,20 @@ class XV4040Detector(SingleTrigger, DetectorBase):
     ``image`` (image1:) is declared so viewers and plans can find it, but is never read here:
     a 32 MiB frame over Channel Access at every point is exactly what the file store avoids.
     """
+    # ADComponent(cls, suffix): a sub-device whose PV prefix is the detector's prefix plus the
+    # suffix, e.g. "XV4040:" + "cam1:" -> XV4040:cam1:Acquire and so on.
     cam = ADCpt(TucsenCam, "cam1:")
     image = ADCpt(ImagePlugin_V34, "image1:")
     stats1 = ADCpt(StatsPlugin_V34, "Stats1:")
     hdf5 = ADCpt(
         XV4040HDF5Plugin,
         "HDF1:",
-        write_path_template=os.path.join(XV4040_FILES_ROOT, XV4040_IMAGE_DIR),   # the IOC's view
-        read_path_template=os.path.join(XV4040_READ_ROOT, XV4040_IMAGE_DIR),     # the client's view
-        root=XV4040_READ_ROOT,                                                    # Resource 'root'
+        # The three path arguments belong to the file-store mixin, not to any PV:
+        write_path_template=os.path.join(XV4040_FILES_ROOT, XV4040_IMAGE_DIR),   # what is written to HDF1:FilePath
+                                                                                  # (strftime-expanded, so a dated dir)
+        read_path_template=os.path.join(XV4040_READ_ROOT, XV4040_IMAGE_DIR),     # where THIS process finds the file
+        root=XV4040_READ_ROOT,                                                    # Resource "root": paths in the
+                                                                                  # documents are relative to it
     )
 
 
@@ -285,32 +313,47 @@ class XV4040Detector(SingleTrigger, DetectorBase):
 def make_detector(prefix: str = XV4040_PREFIX, name: str = XV4040_NAME, *,
                   connect_timeout: float = CONNECT_TIMEOUT_S) -> XV4040Detector:
     """Connect to the IOC (raises if it is not there) and apply section 1."""
-    det = XV4040Detector(prefix, name=name)
-    det.wait_for_connection(timeout=connect_timeout)
+    det = XV4040Detector(prefix, name=name)             # builds the PV names; no network traffic yet
+    det.wait_for_connection(timeout=connect_timeout)    # every PV must answer, else TimeoutError
 
-    # camera and statistics: written at stage() in the order given
+    # `stage_sigs` is an ordered dict {signal: value}. bluesky's stage() writes them in order
+    # (remembering the old values) and unstage() writes the old values back in reverse order.
+    # update() appends ours after what SingleTrigger / PluginBase already put there.
     det.cam.stage_sigs.update(CAM_STAGE_SIGS)
     det.stats1.stage_sigs.update(STATS1_STAGE_SIGS)
 
-    # file writer: OUR settings first (num_capture before capture=1), then the mixin's
-    # file_template, file_write_mode=Stream, capture=1
+    # For the writer the ORDER matters: num_capture must be written before capture=1, and
+    # ophyd's FileStoreHDF5 base has already placed capture=1 (with file_template and
+    # file_write_mode=Stream) in det.hdf5.stage_sigs. So build a new dict with OUR entries
+    # first, then append the base's entries, and replace the attribute.
     sigs = OrderedDict(HDF5_STAGE_SIGS)
     sigs.update(det.hdf5.stage_sigs)
     det.hdf5.stage_sigs = sigs
 
-    # what read() returns, and what tables/plots show without being asked
-    det.read_attrs = list(DETECTOR_READ_ATTRS)
-    det.hdf5.read_attrs = list(HDF5_READ_ATTRS)
-    det.stats1.read_attrs = list(STATS1_READ_ATTRS)
-    for attr in STATS1_HINTED:
+    # What read() returns. ophyd's `read_attrs` is the list of sub-components whose values go
+    # into every Event document; anything not listed is neither read nor stored.
+    det.read_attrs = list(DETECTOR_READ_ATTRS)          # ["hdf5", "stats1"]: the file writer and Stats1
+    det.hdf5.read_attrs = list(HDF5_READ_ATTRS)         # []: no HDF1 PVs; the writer contributes only the
+                                                        #     datum (a pointer to the frame in the file)
+    det.stats1.read_attrs = list(STATS1_READ_ATTRS)     # ["mean_value", "max_value"]: two numbers per point
+
+    # `kind` is ophyd's per-signal label for how bluesky should treat a value:
+    #   "hinted"  -> also shown by default in LiveTable / BestEffortCallback plots
+    #   "normal"  -> read and stored, not shown unless asked (the default)
+    #   "omitted" -> not read at all
+    for attr in STATS1_HINTED:                          # ["mean_value"]
         getattr(det.stats1, attr).kind = "hinted"
-    det.image.kind = "omitted"
+    det.image.kind = "omitted"                          # image1: is declared for viewers, never read by
+                                                        # a scan: that would pull 32 MiB over CA per point
     return det
 
 
 # =====================================================================================
 # 6. INSTANCE  -- created at import so a startup file can `from area_detectors import xv4040`
 # =====================================================================================
+# The queue-server (and any `import area_detectors`) runs this at load time. If the IOC is not
+# answering, the name still exists (as None) so the rest of the startup directory loads and a
+# plan using it fails with the message below instead of an import error.
 try:
     xv4040 = make_detector()
 except Exception as e:  # noqa: BLE001  -- same behaviour as the reference startup file
@@ -329,4 +372,7 @@ def warmup_xv4040():
     if xv4040 is None:
         raise RuntimeError("xv4040 is not connected; was the IOC up when this file loaded?")
     xv4040.hdf5.warmup()
-    yield from ()                                 # a plan with no messages
+    # A bluesky plan must be a generator that yields Msg objects to the RunEngine. This one
+    # has nothing to ask of the RunEngine (the work above talked to the IOC directly), so it
+    # yields nothing: `yield from ()` makes the function a generator without emitting a Msg.
+    yield from ()
