@@ -60,12 +60,19 @@ XV4040_READ_ROOT = XV4040_FILES_ROOT         # differs from FILES_ROOT only when
 
 # ---- which IOC --------------------------------------------------------------------------
 XV4040_PREFIX = os.environ.get("XV4040_PREFIX", "XV4040:")   # both drivers serve this prefix
+XV4040_CAM_PORT = "TUCSEN"                   # asyn port of the camera driver, the plugins' source
 XV4040_NAME = "xv4040"                       # ophyd name: data keys become xv4040_image, ...
 CONNECT_TIMEOUT_S = 10.0                     # wait_for_connection at instantiation
 
 # ---- camera settings written at stage(), restored at unstage() -------------------------
-# One frame per trigger point. SingleTrigger itself stages image_mode=Multiple, acquire=0.
+# One frame per trigger point. SingleTrigger itself stages acquire=0, image_mode=Multiple
+# (written before these). Anything not listed keeps whatever the IOC has at the time, in
+# particular the ROI (MinX/MinY/SizeX/SizeY) and BinMode: those are the operator's choice and a
+# scan should not silently undo them. After changing them, run the warm-up (section 3).
 CAM_STAGE_SIGS = OrderedDict([
+    ("trigger_mode", "Free Run"),            # software-driven scan: Acquire starts the frame itself.
+                                             # Left in Standard/Synchronous/Global the camera would
+                                             # wait for a hardware trigger and the scan would hang.
     ("num_images", 1),                       # frames per trigger
     ("acquire_time", 0.05),                  # s; full frame runs at ~8.6 fps, so >= 0.02 s
     ("array_callbacks", 1),                  # plugins (writer, stats) must see the frames
@@ -73,9 +80,18 @@ CAM_STAGE_SIGS = OrderedDict([
 
 # ---- file-writer settings written at stage(), in this order ------------------------------
 # num_capture MUST be written before capture=1: a NumCapture left over from autosave (100 on
-# ioc-xv4040) would end the file after that many frames. The FileStoreHDF5 mixin appends its
-# own file_template, file_write_mode=Stream, capture=1 after these (see make_detector).
+# ioc-xv4040) would end the file after that many frames. ophyd's HDF5Plugin/FileStoreHDF5
+# bases stage, after ours: enable=1, blocking_callbacks=Yes (the camera thread waits for each
+# frame to be written: no drops, fine for step scans), cam.array_callbacks=1,
+# create_directory=-3 (the IOC creates up to 3 missing path levels), array_counter=0,
+# auto_save=Yes, file_template="%s%s_%6.6d.h5", file_write_mode=Stream, capture=1.
 HDF5_STAGE_SIGS = OrderedDict([
+    ("nd_array_port", XV4040_CAM_PORT),      # take frames straight from the camera, not from
+                                             # whatever plugin someone last chained it to
+    ("num_extra_dims", 0),                   # plain (N, rows, cols) stack; extra dims would
+                                             # change the dataset shape tiled is told about
+    ("xml_file_name", ""),                   # default file layout, so HDF5_DATASET below holds
+    ("swmr_mode", 0),                        # not SWMR: matches swmr=False in the resource
     ("num_capture", 0),                      # 0 = stream until unstaged: one file per scan
     ("auto_increment", 1),                   # file number advances per scan
     ("compression", "None"),                 # None | zlib | Blosc | BSLZ4 | LZ4 (+ N-bit, szip, JPEG).
@@ -95,7 +111,11 @@ WARMUP_TIMEOUT_S = 30.0                      # one frame before the first captur
 DETECTOR_READ_ATTRS = ["hdf5", "stats1"]
 HDF5_READ_ATTRS = []                         # the datum only
 STATS1_READ_ATTRS = ["mean_value", "max_value"]
-STATS1_STAGE_SIGS = OrderedDict([("enable", 1), ("compute_statistics", 1)])   # Yes/No enums, 1 = Yes
+STATS1_HINTED = ["mean_value"]               # what LiveTable / BestEffortCallback show by default
+STATS1_STAGE_SIGS = OrderedDict([            # ophyd's PluginBase also stages enable=1, blocking_callbacks=Yes
+    ("nd_array_port", XV4040_CAM_PORT),      # statistics of the raw camera frame
+    ("compute_statistics", 1),               # Yes/No enum, 1 = Yes
+])
 
 # ---- camera DataType enum string -> numpy dtype string -----------------------------------
 # For the descriptor's "dtype_str" (older tiled/databroker readers), as in the reference
@@ -278,10 +298,12 @@ def make_detector(prefix: str = XV4040_PREFIX, name: str = XV4040_NAME, *,
     sigs.update(det.hdf5.stage_sigs)
     det.hdf5.stage_sigs = sigs
 
-    # what read() returns
+    # what read() returns, and what tables/plots show without being asked
     det.read_attrs = list(DETECTOR_READ_ATTRS)
     det.hdf5.read_attrs = list(HDF5_READ_ATTRS)
     det.stats1.read_attrs = list(STATS1_READ_ATTRS)
+    for attr in STATS1_HINTED:
+        getattr(det.stats1, attr).kind = "hinted"
     det.image.kind = "omitted"
     return det
 
