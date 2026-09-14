@@ -98,7 +98,9 @@ fi
 
 # ---- stop whatever is running -------------------------------------------------
 cput "${P}cam1:Acquire" 0
-cput "${P}HDF1:Capture" 0
+# Capture 0 only if a capture is running: on an idle writer in Single mode the plugin
+# logs "NDPluginFile:doCapture ERROR: capture not supported in Single mode".
+[ "$(cget "${P}HDF1:Capture_RBV")" = "Done" ] || cput "${P}HDF1:Capture" 0
 sleep 1
 wait_idle || exit 2
 

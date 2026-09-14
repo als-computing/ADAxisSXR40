@@ -96,7 +96,9 @@ DEFAULT_REL_TOL = 1e-3
 # Writing these recreates the plugin's threads and message queue (ADCore R3-14
 # NDPluginDriver::writeInt32), discarding queued arrays. Restore writes them only when the
 # readback differs from the snapshot, so an ordinary restore never touches them.
-RESTORE_ONLY_IF_CHANGED = frozenset({"HDF1:QueueSize", "HDF1:BlockingCallbacks"})
+# HDF1:Capture: writing 0 to an idle writer in Single mode (ADTucsen's autosaved default)
+# logs "NDPluginFile:doCapture ERROR: capture not supported in Single mode" (seen 2026-09-14).
+RESTORE_ONLY_IF_CHANGED = frozenset({"HDF1:QueueSize", "HDF1:BlockingCallbacks", "HDF1:Capture"})
 
 # ---- IOC log watching (helpers/logdelta.py) --------------------------------------------
 # A line is flagged when it matches an error pattern and no allow pattern.

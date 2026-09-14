@@ -36,7 +36,12 @@ INTERVAL="${HEALTH_INTERVAL:-60}"
 PREFIX="${IOC_PREFIX:-XV4040:}"
 STARTUP_WAIT="${HEALTH_STARTUP_WAIT:-170}"      # < TimeoutStartSec in the unit
 
-hlog() { echo "health: $*"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$HLOG" 2>/dev/null; }
+# The date fork can be interrupted by the same SIGTERM that systemd sends to the whole
+# control group at stop (seen 2026-09-14: a stopping line with no timestamp); retry once.
+hlog() {
+    ts=$(date '+%Y-%m-%d %H:%M:%S'); [ -n "$ts" ] || ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "health: $*"; echo "${ts:-????-??-?? ??:??:??} $*" >> "$HLOG" 2>/dev/null
+}
 notify() { command -v systemd-notify >/dev/null 2>&1 && [ -n "$NOTIFY_SOCKET" ] && systemd-notify "$@"; return 0; }
 
 /usr/bin/procServ --foreground --quiet \
