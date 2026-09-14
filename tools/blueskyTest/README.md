@@ -6,7 +6,8 @@ Two files, meant to be lifted into a queue-server startup directory later:
 |---|---|
 | [`area_detectors.py`](area_detectors.py) | The ophyd device for the XV4040 detector, in six marked sections: **1. CONFIGURATION** (every value to set in advance: data root and dated directory, prefix and name, the camera / writer / Stats1 settings applied at `stage()`, what `read()` returns, the HDF5 dataset path and resource spec, the dtype map), 2. `TucsenCam` (records both drivers have), 3. `XV4040HDF5Plugin` (HDF5 writer as a bluesky file store, tiled-readable resource, our own `warmup()`), 4. `XV4040Detector` (`SingleTrigger` + `DetectorBase`), 5. `make_detector()` (connects, applies section 1), 6. `xv4040 = make_detector()` at import, the way bluesky-web's [`02_area_detectors.py`](https://github.com/als-computing/bluesky-web/blob/main/queue-server/startup_bl531/02_area_detectors.py) instantiates its Basler and Pilatus devices. To adapt it to another root, prefix or exposure, edit section 1 only. |
 | [`main.py`](main.py) | The test: a `RunEngine`, ophyd's virtual `motor`, `scan([xv4040], motor, -1, 1, N)` with a `LiveTable` and bluesky's **`TiledWriter`** writing into a temporary `tiled serve catalog`; then the run's documents, the HDF5 file and the image stack as tiled serves it are checked. |
-| [`run.sh`](run.sh) | Creates `.venv` (bluesky, ophyd, h5py, `tiled[all]` over the system pyepics) on first use and runs `main.py`; pins Channel Access to this host like `tests/run.sh`. |
+| [`qserver_test.py`](qserver_test.py) | The same scan through a **real queue-server**: embedded Redis, temporary tiled, `start-re-manager` with this file in its startup directory, items queued over ZMQ, history and tiled checked. `run.sh qserver`. |
+| [`run.sh`](run.sh) | Creates `.venv` (bluesky, ophyd, h5py, `tiled[all]`, and for `qserver` also bluesky-queueserver + redislite, over the system pyepics) on first use and runs `main.py` or `qserver_test.py`; pins Channel Access to this host like `tests/run.sh`. |
 
 ```bash
 tools/blueskyTest/run.sh                    # 5 points; file checked directly and through tiled, then deleted
@@ -85,19 +86,32 @@ could not be read back.
 | device instantiated at import inside `try/except` with a message | same (`xv4040 = make_detector()`), with `wait_for_connection` so a missing IOC fails there |
 | Pilatus devices, `root_str`/`md` constructor extras, RGB/Bayer shape branch | not carried: one detector, one color mode |
 
-## Queue-server compatibility (checked 2026-09-14)
+## Queue-server, end to end (2026-09-14)
 
-The file was loaded with the queue-server's own startup loader, `qserver-list-plans-devices`
-(bluesky-queueserver 0.0.25, installed in the same venv), from a startup directory holding a
-`00_base.py` (`motor`, `scan`, `count`) and this file as `02_area_detectors.py`:
+[`qserver_test.py`](qserver_test.py) (`run.sh qserver`) runs the real thing, all on this host and
+torn down afterwards: an embedded Redis (`redislite`, no root, no system service), a temporary
+tiled server, and `start-re-manager --startup-dir` on a directory holding `00_base.py`
+(RunEngine with the TiledWriter subscribed, `motor`, `scan`, `count`), the stock
+`user_group_permissions.yaml`, and this `area_detectors.py` as `02_area_detectors.py`. Over the
+manager's ZMQ API it opens the environment, queues `warmup_xv4040` and
+`scan([xv4040], motor, -1, 1, 3)`, starts the queue, and reads the history and the run:
 
 ```
-devices: ['motor', 'xv4040']          xv4040: XV4040Detector, is_readable True
-plans:   ['count', 'scan', 'warmup_xv4040']
+devices allowed: ['motor', 'xv4040']
+plans allowed:   ['count', 'scan', 'warmup_xv4040']
+queue finished in 4.0 s
+history: warmup_xv4040    exit_status=completed
+history: scan             exit_status=completed run_uids=['c52b0e7c-...']
+tiled: c52b0e7c/primary/xv4040_image shape=(3, 4096, 4096) dtype=uint16
+asset uri: file://localhost/home/gabrielgazolla/axis-perf-tmp/bluesky/2026/09/14/d90fe0c3-..._000000.h5
+file d90fe0c3-..._000000.h5: shape=(3, 4096, 4096); frame0 mean file=1619.1 tiled=1619.1
+OK: queue-server ran warmup_xv4040 and scan([xv4040], motor, -1, 1, 3); tiled serves 3 frames of 4096x4096 uint16
 ```
 
-So a queue item `{"name": "scan", "args": [["xv4040"], "motor", -1, 1, 11]}` is valid, and
-`warmup_xv4040` is a plan the queue accepts. Things to know when deploying:
+So the file works as a queue-server startup file as it stands (bluesky-queueserver 0.0.25):
+the worker loads it, registers the device and the plan, executes a queued scan against the
+IOC, and the TiledWriter in the worker produces a run whose image stack tiled serves.
+Things to know when deploying:
 
 - **Run `warmup_xv4040` once** after the worker environment opens and after every ROI or
   binning change, before the first scan. Otherwise the first Stream capture at a new geometry
@@ -112,20 +126,11 @@ So a queue item `{"name": "scan", "args": [["xv4040"], "motor", -1, 1, 11]}` is 
 - **TiledWriter**: subscribe it in the worker (`RE.subscribe(TiledWriter(client))`); the
   resource spec and parameters this device emits are what it needs (section above).
 
-To repeat the check:
-
-```bash
-d=$(mktemp -d); mkdir $d/startup
-printf 'from ophyd.sim import motor\nfrom bluesky.plans import scan, count\n' > $d/startup/00_base.py
-cp tools/blueskyTest/area_detectors.py $d/startup/02_area_detectors.py
-tools/blueskyTest/.venv/bin/pip install -q bluesky-queueserver
-EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO tools/blueskyTest/.venv/bin/qserver-list-plans-devices --startup-dir $d/startup --file-dir $d
-grep -A2 "xv4040\|warmup" $d/existing_plans_and_devices.yaml | head
-```
+To repeat: `tools/blueskyTest/run.sh qserver` (add `--keep` to keep the temp startup directory,
+the manager log and the HDF5 file for inspection).
 
 ## Not covered here
 
-Hardware triggering (`TriggerMode` other than `Free Run`), and a running queue-server with the
-tiled writer subscribed in its worker (only the loader was exercised). The device is written so
-that dropping `area_detectors.py` into the startup directory and queueing
-`scan([xv4040], motor, ...)` is the next step.
+Hardware triggering (`TriggerMode` other than `Free Run`), and the beamline's own
+queue-server deployment (its Redis, its tiled, its permissions file): what was run here is
+the same software on this host with temporary instances of each.

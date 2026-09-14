@@ -1,9 +1,12 @@
 #!/bin/sh
-# tools/blueskyTest/run.sh -- run main.py (a bluesky scan against the live XV4040 IOC) in a
-# venv that has bluesky, ophyd and h5py on top of the system pyepics/numpy.
+# tools/blueskyTest/run.sh -- run main.py (a bluesky scan against the live XV4040 IOC) or
+# qserver_test.py (the same through a real queue-server) in a venv that has bluesky, ophyd,
+# h5py, tiled, bluesky-queueserver and redislite on top of the system pyepics/numpy.
 #
-#   tools/blueskyTest/run.sh                    # 5-point scan, file checked then deleted
+#   tools/blueskyTest/run.sh                    # main.py: 5-point scan, file checked then deleted
 #   tools/blueskyTest/run.sh --points 10 --keep
+#   tools/blueskyTest/run.sh qserver            # qserver_test.py: redis + tiled + start-re-manager,
+#   tools/blueskyTest/run.sh qserver --points 5 #   queue warmup_xv4040 and a scan, read back via tiled
 #
 # Channel Access is pinned to this host, like tests/run.sh: both IOCs serve XV4040: and only
 # the local one may answer. pvAccess is not used here.
@@ -27,4 +30,14 @@ export EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO
 export EPICS_CA_MAX_ARRAY_BYTES=40000000
 unset EPICS_PVA_ADDR_LIST EPICS_PVA_AUTO_ADDR_LIST
 cd "$HERE"
-exec "$VENV/bin/python" main.py "$@"
+SCRIPT=main.py
+if [ "${1:-}" = "qserver" ]; then
+    shift
+    SCRIPT=qserver_test.py
+    # the queue-server manager and an embedded Redis for its queue (no root, no system service)
+    if ! "$VENV/bin/python" -c "import bluesky_queueserver, redislite" 2>/dev/null; then
+        echo "installing bluesky-queueserver redislite into $VENV"
+        "$VENV/bin/pip" install -q bluesky-queueserver redislite
+    fi
+fi
+exec "$VENV/bin/python" "$SCRIPT" "$@"
