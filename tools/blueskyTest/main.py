@@ -242,6 +242,11 @@ def main(argv=None) -> int:
                 mins = [int(np.min(data[i, ::step, ::step])) for i in sample]
                 maxs = [int(np.max(data[i, ::step, ::step])) for i in sample]
                 first_frame_mean = float(np.mean(data[0]))
+                # two more frames and a sub-region, to compare with what tiled serves
+                probe_frames = sorted({shape[0] // 2, shape[0] - 1})
+                probe = {i: data[i] for i in probe_frames}
+                region = (slice(0, min(rows, 16)), slice(1000, 1016))
+                probe_region = data[probe_frames[0]][region]
         except Exception as e:  # noqa: BLE001
             return fail(f"cannot read {path}: {e}")
         size_b = path.stat().st_size
@@ -279,6 +284,18 @@ def main(argv=None) -> int:
                     problems.append(f"tiled dtype {tdtype} != uint16")
                 if abs(t_mean - first_frame_mean) > 1e-6:
                     problems.append(f"tiled frame 0 mean {t_mean} != file {first_frame_mean}")
+                # individual frames by index, and a sub-region slice, must be the file's pixels
+                flat = tshape == (total, rows, cols)
+                for i, want in probe.items():
+                    got = node[i] if flat else node[i // fpp, i % fpp]
+                    if not np.array_equal(np.asarray(got), want):
+                        problems.append(f"tiled frame {i} differs from the file")
+                i0 = probe_frames[0]
+                got_region = node[i0, region[0], region[1]] if flat else node[i0 // fpp, i0 % fpp, region[0], region[1]]
+                if not np.array_equal(np.asarray(got_region), probe_region):
+                    problems.append(f"tiled sub-region of frame {i0} differs from the file")
+                print(f"tiled: frames {probe_frames} and a {probe_region.shape} sub-region read by index: "
+                      f"{'identical to the file' if not [p for p in problems if 'tiled frame' in p or 'sub-region' in p] else 'MISMATCH'}")
             except Exception as e:  # noqa: BLE001
                 problems.append(f"tiled could not serve the image: {type(e).__name__}: {e}")
 
