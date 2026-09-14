@@ -14,7 +14,13 @@ pytestmark = pytest.mark.smoke
 UNIT = ours.SYSTEMD_DIR / "ioc-axissxr40.service"
 RUN = ours.SYSTEMD_DIR / "ioc-axissxr40-run.sh"
 GUARD = ours.SYSTEMD_DIR / "ioc-axissxr40-guard.sh"
+HEALTH = ours.SYSTEMD_DIR / "ioc-axissxr40-health.sh"
 START = ours.IOC_BOOT / "start_epics.sh"
+
+
+def unit_value(text, key):
+    m = re.search(rf"^{key}=(.*)$", text, re.M)
+    return m.group(1).strip() if m else None
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +61,7 @@ def test_st_cmd_has_shebang_and_is_executable():
     assert os.access(ours.ST_CMD, os.X_OK)
 
 
-@pytest.mark.parametrize("script", [START, RUN, GUARD])
+@pytest.mark.parametrize("script", [START, RUN, GUARD, HEALTH])
 def test_shell_scripts_parse_and_are_executable(script):
     assert script.exists(), script
     assert os.access(script, os.X_OK), f"{script} is not executable"
@@ -73,6 +79,21 @@ def test_unit_file_contents():
     assert "ExecStartPre=" not in text, "the guard must run in the main process (RestartPreventExitStatus)"
 
 
+def test_unit_health_and_watchdog_settings():
+    """Type=notify + watchdog: the Status: line and the self-restart described in the README."""
+    text = "\n".join(code_lines(UNIT.read_text()))
+    assert unit_value(text, "Type") == "notify"
+    assert unit_value(text, "NotifyAccess") == "all", "systemd-notify runs as a child of the launcher"
+    assert unit_value(text, "WatchdogSignal") == "SIGTERM", "SIGABRT would core-dump procServ instead of stopping the IOC"
+    interval = int(unit_value(text, "Environment=HEALTH_INTERVAL") or 0)
+    watchdog = int(unit_value(text, "WatchdogSec") or 0)
+    assert interval >= 30, "the user asked for about one check per minute, never per second"
+    assert watchdog > 3 * interval, f"WatchdogSec {watchdog} must exceed three health intervals ({interval} s) so one slow caget cannot trip it"
+    assert int(unit_value(text, "TimeoutStartSec") or 0) >= 120, "camera open + iocInit + autosave needs time before READY"
+    assert unit_value(text, "StartLimitBurst") == "3" and int(unit_value(text, "StartLimitIntervalSec")) >= 600
+    assert "ioc-xv4040" not in re.sub(r"^After=.*$", "", text, flags=re.M), "only After= may mention Damon's unit"
+
+
 def test_unit_verifies():
     if not shutil.which("systemd-analyze"):
         pytest.skip("systemd-analyze not available")
@@ -81,10 +102,17 @@ def test_unit_verifies():
     assert not problems, problems
 
 
-def test_launcher_calls_guard_then_procserv():
-    text = RUN.read_text()
-    assert "ioc-axissxr40-guard.sh" in text and "exec /usr/bin/procServ" in text
+def test_launcher_calls_guard_then_procserv_then_supervises():
+    text = "\n".join(code_lines(RUN.read_text()))
+    guard = text.index("ioc-axissxr40-guard.sh")
+    procserv = text.index("/usr/bin/procServ")
+    assert guard < procserv, "the guard must run before procServ is started"
+    assert "exit $?" in text[guard:procserv], "a guard refusal (75) must end the launcher before any notify"
     assert "20001" in text, "console port must differ from ioc-xv4040's 20000"
+    assert "ioc-axissxr40-health.sh" in text and "--ready" in text and "WATCHDOG=1" in text
+    assert "trap on_term TERM INT" in text, "SIGTERM from systemctl stop / the watchdog must reach procServ"
+    assert "systemctl" not in text, "the launcher never acts on any unit; systemd's watchdog does the restart"
+    assert "ioc-xv4040" not in text
 
 
 def test_guard_exit_code_and_checks():

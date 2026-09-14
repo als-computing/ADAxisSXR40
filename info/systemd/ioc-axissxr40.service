@@ -12,7 +12,21 @@
 # ExecStart runs ioc-axissxr40-run.sh, which first runs ioc-axissxr40-guard.sh -- refusing
 # to start while ioc-xv4040 is active or activating, or while anything already serves
 # pvAccess on TCP 5075, with the reason written to the journal and to
-# /var/log/areadetector/axisSXR40-guard.log -- and then execs procServ.
+# /var/log/areadetector/axisSXR40-guard.log -- then starts procServ and stays as the main
+# process: it tells systemd READY once the IOC answers Channel Access, and every
+# HEALTH_INTERVAL seconds runs ioc-axissxr40-health.sh and reports the verdict as this
+# unit's Status: line ("systemctl status ioc-axissxr40"), e.g.
+#   Status: "OK: Idle, camera present, poll 0.4 s old (09:41:12)"
+#   Status: "ERROR: DetectorState Error, camera present -- IOC needs a restart ... -- no heartbeat; ..."
+# The watchdog heartbeat is sent only for OK and CAMERA ABSENT. When the detector is
+# present but the IOC is in Error, hung, or its driver poll is frozen (a camera power
+# cycle, the stop deadlock), the heartbeat stops; after WatchdogSec systemd stops the
+# service with SIGTERM and Restart= brings it back, which re-opens the camera.
+# StartLimitBurst= caps that at 3 restarts per 30 min; then the unit stays "failed"
+# ("start request repeated too quickly") until someone runs
+#   sudo systemctl reset-failed ioc-axissxr40 && sudo systemctl start ioc-axissxr40
+# The health loop lives inside this service: nothing runs while ioc-xv4040 is serving,
+# and nothing here reads or acts on his unit.
 # This is deliberately NOT Conflicts=ioc-xv4040.service, which would silently stop
 # Damon's service; deciding which IOC owns the camera is an operator action.
 # The guard exits 75 when it refuses; the launcher passes that up as the main process's
@@ -27,9 +41,22 @@ Documentation=file:///usr/local/epics/support/areaDetector/ADAxisSXR40/README.md
 # guard runs after his has finished activating rather than during it.
 After=network-online.target ioc-xv4040.service
 Wants=network-online.target
+# Self-restart budget (watchdog + Restart=always): 3 per 30 min, then "failed" for a person.
+StartLimitIntervalSec=1800
+StartLimitBurst=3
 
 [Service]
-Type=simple
+# notify: "active (running)" only once the IOC answers CA; the launcher's health loop
+# then owns the Status: line and the watchdog heartbeat. NotifyAccess=all because the
+# heartbeat comes from systemd-notify(1) processes forked by the launcher.
+Type=notify
+NotifyAccess=all
+TimeoutStartSec=180
+# 200 s = a bit more than three missed 60 s health checks: one slow caget never trips it.
+WatchdogSec=200
+WatchdogSignal=SIGTERM
+Environment=HEALTH_INTERVAL=60
+Environment=EPICS_BASE_BIN=/usr/local/epics/base-7.0.10/bin/linux-x86_64
 User=gabrielgazolla
 Group=gabrielgazolla
 WorkingDirectory=/usr/local/epics/support/areaDetector/ADAxisSXR40/iocs/axisSXR40IOC/iocBoot/iocAxisSXR40

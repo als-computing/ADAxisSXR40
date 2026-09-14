@@ -1,4 +1,6 @@
-"""The service layer: one IOC, one PVA server, the guard refuses a second."""
+"""The service layer: one IOC, one PVA server, the guard refuses a second, the health line."""
+import datetime
+import re
 import subprocess
 
 import pytest
@@ -35,6 +37,37 @@ def test_guard_refuses_while_an_ioc_holds_the_port(tmp_path):
     assert r.returncode == 75, f"exit {r.returncode}: {r.stdout} {r.stderr}"
     assert "REFUSING TO START" in r.stdout
     assert (tmp_path / "axisSXR40-guard.log").exists(), "refusal must also be written to the guard log"
+
+
+def _show(prop):
+    r = subprocess.run(["systemctl", "show", "-p", prop, "--value", ours.UNIT], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+@pytest.mark.ours_only
+def test_health_status_line_is_fresh_and_ok(ioc):
+    """The launcher's one-minute health loop owns the unit's Status: line (systemd Type=notify)."""
+    if not ioc.unit_active:
+        pytest.skip("our IOC is not running under systemd")
+    if _show("Type") != "notify":
+        pytest.skip("installed unit predates the health loop; reinstall info/systemd/ioc-axissxr40.service")
+    status = _show("StatusText")
+    assert status.startswith("OK:"), f"unit Status: {status!r}"
+    m = re.search(r"\((\d\d):(\d\d):(\d\d)\)\s*$", status)
+    assert m, f"status line lacks the check time: {status!r}"
+    checked = datetime.datetime.now().replace(hour=int(m[1]), minute=int(m[2]), second=int(m[3]), microsecond=0)
+    age = (datetime.datetime.now() - checked).total_seconds() % 86400
+    assert age < 200, f"health line is {age:.0f} s old; the loop should run every ~60 s"
+    assert _show("WatchdogTimestampMonotonic") not in ("", "0"), "no watchdog heartbeat has been received"
+
+
+@pytest.mark.ours_only
+def test_health_script_says_ok_for_our_live_ioc(ioc):
+    if not ioc.unit_active:
+        pytest.skip("our IOC is not running under systemd")
+    r = subprocess.run([str(ours.SYSTEMD_DIR / "ioc-axissxr40-health.sh")], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, f"exit {r.returncode}: {r.stdout}"
+    assert r.stdout.startswith("OK:")
 
 
 def test_our_unit_is_installed_but_not_enabled():

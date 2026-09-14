@@ -46,8 +46,8 @@ swap, run `smoke` and `capture` on his, swap back, run `full` (the compat compar
 
 | Folder | Needs | What it checks |
 |---|---|---|
-| `static/` | nothing | template drvInfo ↔ driver `createParam` (the rename bug), request files, `st.cmd` and systemd files, documentation links, template diff vs ADTucsen, the helpers themselves |
-| `boot/` | IOC | last-boot log slice: capability audit, `N of N PV's connected`, exactly the 8 expected write errors, no warnings; autosave file complete and covering every plugin; one PVA server; the guard refuses a second IOC |
+| `static/` | nothing | template drvInfo ↔ driver `createParam` (the rename bug), request files, `st.cmd` and systemd files (unit keys, launcher, every verdict of the health script with fake `caget`/`lsusb`), documentation links, template diff vs ADTucsen, the helpers themselves |
+| `boot/` | IOC | last-boot log slice: capability audit, `N of N PV's connected`, exactly the 8 expected write errors, no warnings; autosave file complete and covering every plugin; one PVA server; the guard refuses a second IOC; our unit's health `Status:` line is fresh and `OK:` |
 | `pvs/` | IOC | every template record connects with the right type and enum strings; identity strings; safe setpoints round-trip |
 | `driver/` | camera | ROI alignment (SizeY/MinY to 4 is ours; width 8 and MinX 4 the camera does itself), height clamp, AutoLevels→Histogram, FrameFormat bounds, exposure quantisation, ReverseY readback tolerance |
 | `acquire/` | camera | Single/Multiple/Continuous, software trigger, exposure applied, plugins delivering, PVA image, cross-transport equality, pool cap, timestamps, the writers' error paths |

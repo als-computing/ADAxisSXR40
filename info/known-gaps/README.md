@@ -154,6 +154,17 @@ evidence and repro steps in [TODO.md](TODO.md); this file is the summary view.
   with either request. NDPluginPva / pvDatabase behaviour in ADCore R3-14, identical for
   both IOCs. Viewers use the full request and are unaffected; scripts that want a cheap
   frame counter over pvAccess must subscribe to the whole NTNDArray (`tests/helpers/pva_viewer.py`).
+- **Neither IOC recovers from a camera power cycle without a restart.** The SDK handle is
+  opened once at startup; after the camera comes back on the USB bus the IOC stays in
+  `Error`, acquisitions fail with `0x80000111` and the temperature poll is frozen
+  (2026-09-14, ADTucsen; the open path is the same in ADAxisSXR40). systemd shows
+  `active` throughout. Since 2026-09-14 `ioc-axissxr40.service` carries a one-minute health
+  check that shows the detector verdict as the unit's `Status:` line and withholds the
+  systemd watchdog heartbeat when the camera is present but the IOC is in Error, hung or
+  its poll frozen, so systemd restarts it within ~3 min (3 restarts per 30 min, then
+  `failed`). `ioc-xv4040` still needs the manual restart. Procedure and table in
+  [systemd/README.md](../systemd/README.md); re-opening the device inside the driver on
+  failure would still be the cleaner fix.
 - **Starting a continuous acquisition allocates ~256 MB once** (RSS 587 → 843 MB within the
   first 30 s at full frame, flat afterwards, released at stop; 8 × 32 MiB, the SDK's
   transfer buffers rather than the NDArrayPool, whose `PoolUsedMem` does not move). Not a
