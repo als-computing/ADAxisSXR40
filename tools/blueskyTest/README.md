@@ -113,9 +113,19 @@ the worker loads it, registers the device and the plan, executes a queued scan a
 IOC, and the TiledWriter in the worker produces a run whose image stack tiled serves.
 Things to know when deploying:
 
-- **Run `warmup_xv4040` once** after the worker environment opens and after every ROI or
-  binning change, before the first scan. Otherwise the first Stream capture at a new geometry
-  writes an empty file with "Invalid frame" in the IOC log.
+- **Warm-up is automatic** (`AUTO_WARMUP`): at `stage()` the device compares the frame size the
+  writer last saw with the camera's and takes the one-frame warm-up when they differ (first
+  scan after start-up, after an ROI or binning change; about 0.3 s, nothing otherwise). The
+  `warmup_xv4040` plan is still there for doing it by hand. Without a warm-up the first Stream
+  capture at a new geometry writes an empty file with "Invalid frame" in the IOC log.
+- **Exposure is not staged** (`STAGE_ACQUIRE_TIME_S = None`): a scan uses the IOC's current
+  AcquireTime, set from a plan (`bps.mv(xv4040.cam.acquire_time, 0.5)`) or a screen. Set the
+  constant to a number to force one exposure on every scan, as the reference file does.
+- **A trigger times out** after `TRIGGER_TIMEOUT_S` (60 s): a camera that never finishes a
+  frame fails the plan instead of hanging the queue. Raise it before using longer exposures.
+- **Provenance**: each run's descriptor records, once, the camera configuration: exposure,
+  period, image and trigger mode, model, plus bin mode, frame format, ROI and temperature
+  (`CAM_CONFIGURATION_ATTRS`).
 - **Environment**: `XV4040_DATA_ROOT` (data root writable by the IOC's user) and
   `XV4040_PREFIX` can be set in the worker's environment instead of editing section 1.
   Channel Access needs `EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO` on this host,

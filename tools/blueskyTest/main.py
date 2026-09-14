@@ -111,13 +111,18 @@ def main(argv=None) -> int:
     det = ad.xv4040
     if det is None:
         return fail("detector did not connect (see the message above)")
-    det.cam.stage_sigs["acquire_time"] = args.exposure
+    # exposure is an experiment parameter, set on the IOC like a plan would (bps.mv), not staged;
+    # remembered here and put back at the end so the IOC is left as found
+    exposure_before = det.cam.acquire_time.get()
+    det.cam.acquire_time.set(args.exposure).wait(timeout=10)
     print(f"IOC {det.prefix} model={det.cam.model.get()!r} manufacturer={det.cam.manufacturer.get()!r} "
-          f"state={det.cam.detector_state.get(as_string=True)}")
+          f"state={det.cam.detector_state.get(as_string=True)} exposure={det.cam.acquire_time.get():.3f} s")
     if det.cam.detector_state.get(as_string=True) not in ("Idle", "Aborted"):
         return fail(f"detector is {det.cam.detector_state.get(as_string=True)}; not starting a scan")
 
     ensure_write_dir(det)
+    # The device warms up by itself at stage() when the geometry changed (AUTO_WARMUP); calling
+    # it here as well makes the test independent of that setting and prints the geometry early.
     det.hdf5.warmup()
     rows, cols = det.cam.array_size.array_size_y.get(), det.cam.array_size.array_size_x.get()
     print(f"geometry after warm-up: {rows} x {cols}")
@@ -234,6 +239,10 @@ def main(argv=None) -> int:
             tiled.stop()
         if path and path.exists() and not args.keep:
             path.unlink()
+        try:
+            det.cam.acquire_time.set(exposure_before).wait(timeout=10)
+        except Exception as e:  # noqa: BLE001
+            print(f"could not restore AcquireTime {exposure_before}: {e}")
 
 
 if __name__ == "__main__":

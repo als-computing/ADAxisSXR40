@@ -34,6 +34,7 @@ LAYOUT
     5. FACTORY         make_detector()      applies section 1 to a connected device
     6. INSTANCE        xv4040 and the warmup_xv4040 plan, created at import
 """
+import functools
 import os
 import time
 from collections import OrderedDict
@@ -50,6 +51,7 @@ from collections import OrderedDict
 from ophyd import ADComponent as ADCpt
 from ophyd import CamBase, Component as Cpt, DetectorBase, EpicsSignalRO, SingleTrigger
 from ophyd.areadetector.base import EpicsSignalWithRBV as SignalWithRBV
+from ophyd.areadetector.trigger_mixins import ADTriggerStatus
 from ophyd.areadetector.filestore_mixins import FileStoreHDF5IterativeWrite
 from ophyd.areadetector.plugins import HDF5Plugin_V34, ImagePlugin_V34, StatsPlugin_V34
 
@@ -83,9 +85,24 @@ CAM_STAGE_SIGS = OrderedDict([
                                              # Left in Standard/Synchronous/Global the camera would
                                              # wait for a hardware trigger and the scan would hang.
     ("num_images", 1),                       # frames per trigger
-    ("acquire_time", 0.05),                  # s; full frame runs at ~8.6 fps, so >= 0.02 s
     ("array_callbacks", 1),                  # plugins (writer, stats) must see the frames
 ])
+# Exposure is an experiment parameter, so by default a scan uses whatever AcquireTime the IOC
+# has (set it from a plan: `yield from bps.mv(xv4040.cam.acquire_time, 0.5)`, or from a screen).
+# A number here forces that exposure at every stage() instead, as the reference file does.
+STAGE_ACQUIRE_TIME_S = None                  # e.g. 0.05; full frame runs at ~8.6 fps, so >= 0.02 s
+# A trigger that never completes (the camera stops delivering frames: USB fault, the
+# stop-deadlock of August) fails the plan after this long instead of hanging the queue forever.
+TRIGGER_TIMEOUT_S = 60.0                     # must exceed the longest exposure in use
+# Camera settings recorded once per run in the descriptor's "configuration" (provenance).
+# CamBase already records acquire_time, acquire_period, model, num_exposures, image_mode,
+# num_images, manufacturer, trigger_mode; these add the sensor geometry and state.
+CAM_CONFIGURATION_ATTRS = ["bin_mode", "frame_format", "temperature_actual",
+                           "min_x", "min_y", "size.size_x", "size.size_y"]     # the ROI
+# Take the warm-up frame automatically at stage() when the writer's last-seen geometry differs
+# from the camera's (first scan after start-up, after an ROI or binning change). About 0.3 s;
+# nothing happens when the geometry already matches. The warmup_xv4040 plan remains for hand use.
+AUTO_WARMUP = True
 
 # ---- file-writer settings written at stage(), in this order ------------------------------
 # num_capture MUST be written before capture=1: a NumCapture left over from autosave (100 on
@@ -230,6 +247,26 @@ class XV4040HDF5Plugin(FileStoreHDF5IterativeWrite, HDF5Plugin_V34):
                 ret[key].setdefault("dtype_numpy", dtype_str)   # current readers
         return ret
 
+    # -- stage: warm up first when the geometry changed -----------------------------------
+    def expected_frame_shape(self):
+        """(rows, cols) of the NEXT frame, from the ROI setpoint readbacks (SizeX/SizeY_RBV,
+        divided by BinX/BinY). Not cam.array_size: that is the size of the LAST frame taken
+        and only changes once a frame at the new geometry has been acquired."""
+        cam = self.parent.cam
+        by, bx = max(int(cam.bin_y.get()), 1), max(int(cam.bin_x.get()), 1)
+        return int(cam.size.size_y.get()) // by, int(cam.size.size_x.get()) // bx
+
+    def stage(self):
+        """Before the file store opens the scan's file: if the frame size the writer last saw
+        (HDF1:ArraySizeX/Y, from the last array it processed) differs from the size the camera
+        will deliver, take the warm-up frame now. Then the normal file-store staging, whose
+        Resource document reads the (now current) frame size."""
+        if AUTO_WARMUP:
+            seen = (int(self.array_size.height.get()), int(self.array_size.width.get()))
+            if seen != self.expected_frame_shape():
+                self.warmup()
+        return super().stage()
+
     # -- warm-up: one frame before the first Stream capture ------------------------------
     def warmup(self, timeout: float = WARMUP_TIMEOUT_S) -> None:
         """Acquire one frame with callbacks on so the plugin learns the array geometry.
@@ -320,7 +357,16 @@ def make_detector(prefix: str = XV4040_PREFIX, name: str = XV4040_NAME, *,
     # (remembering the old values) and unstage() writes the old values back in reverse order.
     # update() appends ours after what SingleTrigger / PluginBase already put there.
     det.cam.stage_sigs.update(CAM_STAGE_SIGS)
+    if STAGE_ACQUIRE_TIME_S is not None:
+        det.cam.stage_sigs["acquire_time"] = STAGE_ACQUIRE_TIME_S
     det.stats1.stage_sigs.update(STATS1_STAGE_SIGS)
+
+    # trigger(): SingleTrigger builds one ADTriggerStatus per trigger from `_status_type`;
+    # giving it a timeout turns a camera that never finishes into a failed plan, not a hang.
+    det._status_type = functools.partial(ADTriggerStatus, timeout=TRIGGER_TIMEOUT_S)
+
+    # once-per-run provenance in the descriptor (configuration_attrs are read at stage())
+    det.cam.configuration_attrs = list(det.cam.configuration_attrs) + list(CAM_CONFIGURATION_ATTRS)
 
     # For the writer the ORDER matters: num_capture must be written before capture=1, and
     # ophyd's FileStoreHDF5 base has already placed capture=1 (with file_template and
