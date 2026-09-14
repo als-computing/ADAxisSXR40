@@ -20,6 +20,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from bluesky import RunEngine
+from bluesky.callbacks import LiveTable
 from bluesky.plans import scan
 from ophyd.sim import motor                   # a virtual motor (SynAxis)
 
@@ -78,6 +79,7 @@ def main(argv=None) -> int:
     docs = Docs()
     RE = RunEngine({})
     RE.subscribe(docs)
+    RE.subscribe(LiveTable(["motor", f"{det.name}_stats1_mean_value", f"{det.name}_stats1_max_value"]))
     t0 = time.monotonic()
     uid, = RE(scan([det], motor, -1, 1, args.points), md={"purpose": "ADAxisSXR40 tools/blueskyTest"})
     wall = time.monotonic() - t0
@@ -104,6 +106,7 @@ def main(argv=None) -> int:
     res = resources[0]
     path = Path(res["root"]) / res["resource_path"]
     print(f"resource: root={res['root']} path={res['resource_path']} kwargs={res['resource_kwargs']}")
+    print(f"file on disk: {path}")
     if not path.exists():
         return fail(f"file {path} does not exist")
 

@@ -105,10 +105,13 @@ def make_detector(prefix: str = XV4040_PREFIX, name: str = "xv4040", *,
     sigs.update(det.hdf5.stage_sigs)                   # file_template, file_write_mode=Stream, capture=1
     det.hdf5.stage_sigs = sigs
 
-    # What a scan reads from the detector: the file-store datum only (picked up by tiled later).
-    det.read_attrs = ["hdf5"]
+    # What a scan reads from the detector: the file-store datum (picked up by tiled later) and
+    # two scalars from Stats1 so a LiveTable has something per point. Never the image itself.
+    det.read_attrs = ["hdf5", "stats1"]
     det.hdf5.read_attrs = []
-    det.stats1.kind = "omitted"
+    det.stats1.read_attrs = ["mean_value", "max_value"]
+    det.stats1.stage_sigs["enable"] = 1
+    det.stats1.stage_sigs["compute_statistics"] = 1
     det.image.kind = "omitted"
     return det
 
