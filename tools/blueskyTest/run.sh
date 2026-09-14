@@ -18,6 +18,11 @@ if ! "$VENV/bin/python" -c "import bluesky, ophyd, h5py" 2>/dev/null; then
     echo "installing bluesky ophyd h5py into $VENV"
     "$VENV/bin/pip" install -q bluesky ophyd h5py
 fi
+# tiled (server + client) for the TiledWriter round trip; main.py skips that part without it.
+if ! "$VENV/bin/python" -c "import tiled" 2>/dev/null; then
+    echo "installing tiled[all] into $VENV (optional; main.py --no-tiled works without it)"
+    "$VENV/bin/pip" install -q "tiled[all]" || echo "tiled install failed; the TiledWriter check will be skipped" >&2
+fi
 export EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO
 export EPICS_CA_MAX_ARRAY_BYTES=40000000
 unset EPICS_PVA_ADDR_LIST EPICS_PVA_AUTO_ADDR_LIST

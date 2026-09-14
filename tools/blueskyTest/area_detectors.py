@@ -43,8 +43,54 @@ class TucsenCam(CamBase):
     fan_gear = ADCpt(SignalWithRBV, "FanGear")
 
 
+# Camera DataType enum string -> numpy dtype string, as in the reference file's
+# PilatusTIFFPlugin.describe(); kept for consumers that read the older "dtype_str" key.
+DTYPE_STR = {"Int8": "|i1", "UInt8": "|u1", "Int16": "<i2", "UInt16": "<u2",
+             "Int32": "<i4", "UInt32": "<u4", "Int64": "<i8", "UInt64": "<u8",
+             "Float32": "<f4", "Float64": "<f8"}
+
+
 class XV4040HDF5Plugin(FileStoreHDF5IterativeWrite, HDF5Plugin_V34):
-    """HDF5 writer as a bluesky file store: one file per scan, a datum per point."""
+    """HDF5 writer as a bluesky file store: one file per scan, a datum per point.
+
+    Written for bluesky's TiledWriter: ophyd's default resource spec "AD_HDF5" is not in
+    the writer's spec→mimetype table, so the run would be stored with an unreadable
+    "application/octet-stream" asset. "AD_HDF5_SWMR_STREAM" is in the table (it is the
+    same layout: frames stacked in /entry/data/data), and the resource carries the
+    parameters tiled's HDF5 consolidator needs: the dataset path, swmr off (NDFileHDF5
+    does not write in SWMR mode) and the chunk shape (one frame per chunk).
+    """
+
+    DATASET = "/entry/data/data"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filestore_spec = "AD_HDF5_SWMR_STREAM"
+
+    def _generate_resource(self, resource_kwargs):
+        kwargs = dict(resource_kwargs)                       # ophyd gives frame_per_point
+        cam = self.parent.cam
+        kwargs.update(dataset=self.DATASET, swmr=False,
+                      chunk_shape=(1, int(cam.array_size.array_size_y.get()), int(cam.array_size.array_size_x.get())))
+        return super()._generate_resource(kwargs)
+
+    def describe(self):
+        """The image key must carry shape and dtype so tiled can allocate the array without
+        opening the file. ophyd (>= 1.9) already gives shape (num_images, height, width) and
+        "dtype_numpy"; the reference file adds "dtype_str" and a shape from the plugin's own
+        array size, which is what is done here, Mono only (this sensor has one color mode)."""
+        ret = super().describe()
+        key = self.parent._image_name
+        if key in ret:
+            cam = self.parent.cam
+            if cam.color_mode.get(as_string=True) == "Mono":
+                ret[key]["shape"] = [cam.num_images.get(),
+                                     cam.array_size.array_size_y.get(), cam.array_size.array_size_x.get()]
+            dtype_str = DTYPE_STR.get(cam.data_type.get(as_string=True))
+            if dtype_str:
+                ret[key].setdefault("dtype_str", dtype_str)
+                ret[key].setdefault("dtype_numpy", dtype_str)
+        return ret
 
     def warmup(self, timeout: float = 30.0) -> None:
         """Acquire one frame with callbacks on so the plugin learns the array geometry.
@@ -56,21 +102,27 @@ class XV4040HDF5Plugin(FileStoreHDF5IterativeWrite, HDF5Plugin_V34):
         """
         cam = self.parent.cam
         self.enable.set(1).wait()
-        saved = OrderedDict((s, s.get()) for s in (cam.array_callbacks, cam.image_mode, cam.num_images))
-        cam.array_callbacks.set(1).wait()
-        cam.image_mode.set("Single").wait()
-        cam.num_images.set(1).wait()
-        counter0 = self.array_counter.get()
-        cam.acquire.put(1, wait=False)          # a put with completion would block until done: fine here,
-        deadline = time.monotonic() + timeout   # but poll so a hung IOC gives a clear error instead
-        while time.monotonic() < deadline:
-            if cam.acquire.get() == 0 and self.array_counter.get() > counter0:
-                break
-            time.sleep(0.1)
-        else:
-            raise TimeoutError(f"{self.name}: warm-up frame did not arrive within {timeout} s")
-        for sig, val in reversed(list(saved.items())):
-            sig.set(val).wait()
+        saved = OrderedDict((s, s.get()) for s in (cam.array_callbacks, cam.image_mode, cam.num_images,
+                                                   self.auto_save))
+        try:
+            self.auto_save.set(0).wait()        # else a Single-mode writer saves the warm-up frame as a stray file
+            cam.array_callbacks.set(1).wait()
+            cam.image_mode.set("Single").wait()
+            cam.num_images.set(1).wait()
+            # The camera's counter, not the plugin's: NDPluginFile counts only arrays it saves,
+            # but it keeps the last array it received, which is what Stream mode sizes from.
+            counter0 = cam.array_counter.get()
+            cam.acquire.put(1, wait=False)      # poll rather than wait on completion, so a hung IOC
+            deadline = time.monotonic() + timeout   # gives a clear error instead of a silent block
+            while time.monotonic() < deadline:
+                if cam.acquire.get() == 0 and cam.array_counter.get() > counter0:
+                    break
+                time.sleep(0.1)
+            else:
+                raise TimeoutError(f"{self.name}: warm-up frame did not arrive within {timeout} s")
+        finally:
+            for sig, val in reversed(list(saved.items())):
+                sig.set(val).wait()
 
 
 class XV4040Detector(SingleTrigger, DetectorBase):
