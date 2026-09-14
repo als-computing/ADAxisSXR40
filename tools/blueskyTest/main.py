@@ -5,6 +5,9 @@ and as tiled serves it.
     tools/blueskyTest/run.sh                  # 5 points, file deleted after checking
     tools/blueskyTest/run.sh --points 10 --keep
     tools/blueskyTest/run.sh --no-tiled       # documents + file only
+    tools/blueskyTest/run.sh --points 200 --exposure 0.02                      # 200 full frames, ~6.7 GB
+    tools/blueskyTest/run.sh --points 40 --frames-per-point 1000 --rows 8 --exposure 0.00002
+                                              # 40 motor points x 1000-frame bursts at 8 rows = 40000 frames
 
 What it proves: the ophyd device in area_detectors.py stages, triggers and unstages the
 detector the way a queue-server plan will; every point produces a datum; the run's HDF5 file
@@ -42,6 +45,26 @@ class Docs:
 
     def __call__(self, name, doc):
         self.by_name[name].append(doc)
+
+
+class Progress:
+    """One line per event: point i of N, percentage, elapsed and remaining time. This is what a
+    plan's document stream gives for free; the same callback works subscribed to a queue-server
+    worker's RunEngine or to a bluesky-web console."""
+
+    def __init__(self, total_points: int):
+        self.total = total_points
+        self.t0 = None
+
+    def __call__(self, name, doc):
+        if name == "start":
+            self.t0 = time.monotonic()
+        elif name == "event":
+            i = doc["seq_num"]
+            elapsed = time.monotonic() - self.t0
+            remaining = elapsed / i * (self.total - i)
+            print(f"progress: point {i}/{self.total}  {100 * i / self.total:5.1f} %  "
+                  f"elapsed {elapsed:6.1f} s  remaining ~{remaining:5.1f} s", file=sys.stderr, flush=True)
 
 
 def fail(msg):
@@ -102,11 +125,18 @@ class TempTiled:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--points", type=int, default=5, help="scan points (frames), default 5")
+    p.add_argument("--points", type=int, default=5, help="scan points (motor positions), default 5")
+    p.add_argument("--frames-per-point", type=int, default=1,
+                   help="NumImages per trigger: frames the camera takes at each point (default 1)")
+    p.add_argument("--rows", type=int, default=None,
+                   help="ROI height (SizeY, MinY 0) for the run; restored afterwards. Default: leave as is")
     p.add_argument("--keep", action="store_true", help="keep the HDF5 file after checking")
     p.add_argument("--exposure", type=float, default=0.05, help="AcquireTime per frame, s")
     p.add_argument("--no-tiled", action="store_true", help="skip the TiledWriter round trip")
+    p.add_argument("--progress", action="store_true",
+                   help="print point i/N with percentage, elapsed and remaining time on stderr after every point")
     args = p.parse_args(argv)
+    fpp = args.frames_per_point
 
     det = ad.xv4040
     if det is None:
@@ -121,11 +151,19 @@ def main(argv=None) -> int:
         return fail(f"detector is {det.cam.detector_state.get(as_string=True)}; not starting a scan")
 
     ensure_write_dir(det)
+    roi_before = None
+    if args.rows is not None:
+        # an operator's geometry change: offset before size (info/performance/README.md, item 2)
+        roi_before = (det.cam.min_y.get(), det.cam.size.size_y.get())
+        det.cam.min_y.set(0).wait(timeout=10)
+        det.cam.size.size_y.set(args.rows).wait(timeout=10)
+    if fpp != 1:
+        det.cam.stage_sigs["num_images"] = fpp          # a burst per trigger; the datum covers it
     # The device warms up by itself at stage() when the geometry changed (AUTO_WARMUP); calling
     # it here as well makes the test independent of that setting and prints the geometry early.
     det.hdf5.warmup()
     rows, cols = det.cam.array_size.array_size_y.get(), det.cam.array_size.array_size_x.get()
-    print(f"geometry after warm-up: {rows} x {cols}")
+    print(f"geometry after warm-up: {rows} x {cols}; {fpp} frame(s) per point")
 
     tiled = None
     if not args.no_tiled:
@@ -146,12 +184,17 @@ def main(argv=None) -> int:
     if tiled:
         RE.subscribe(TiledWriter(tiled.client))
     n = args.points
+    if args.progress:
+        RE.subscribe(Progress(n))       # (bluesky's ProgressBarManager was tried: it needs a
+                                        # monitored ArrayCounter and shows nothing for sub-second triggers)
+    total = n * fpp                                      # frames expected in the file
     path = None
     try:
         t0 = time.monotonic()
         uid, = RE(scan([det], motor, -1, 1, n), md={"purpose": "ADAxisSXR40 tools/blueskyTest"})
         wall = time.monotonic() - t0
-        print(f"run {uid[:8]} finished in {wall:.1f} s")
+        print(f"run {uid[:8]} finished in {wall:.1f} s ({wall / n:.2f} s per point, "
+              f"{total / wall:.0f} frames/s overall)")
 
         # ---- documents ----------------------------------------------------------------------
         events = docs.by_name["event"]
@@ -163,6 +206,11 @@ def main(argv=None) -> int:
         key = f"{det.name}_image"
         if any(key not in e["data"] for e in events):
             return fail(f"event data lacks {key}: keys {sorted(events[0]['data'])}")
+        positions = [e["data"]["motor"] for e in events if "motor" in e["data"]]
+        print(f"events: {len(events)}; motor positions saved: {len(positions)} "
+              f"from {min(positions):.3f} to {max(positions):.3f}" if positions else "events carry no motor value")
+        if len(positions) != n:
+            return fail(f"{len(positions)} motor positions saved, expected {n}")
         desc = docs.by_name["descriptor"][0]["data_keys"][key]
         print(f"descriptor {key}: shape={desc.get('shape')} dtype_numpy={desc.get('dtype_numpy')} "
               f"dtype_str={desc.get('dtype_str')} external={desc.get('external')}")
@@ -187,23 +235,28 @@ def main(argv=None) -> int:
                 data = f["/entry/data/data"]
                 shape, dtype = data.shape, data.dtype
                 uids = f["/entry/instrument/NDAttributes/NDArrayUniqueId"][()].ravel()
-                means = [float(np.mean(data[i, ::16, ::16])) for i in range(shape[0])]     # subsampled
-                mins = [int(np.min(data[i, ::16, ::16])) for i in range(shape[0])]
-                maxs = [int(np.max(data[i, ::16, ::16])) for i in range(shape[0])]
+                # pixel statistics on a sample of frames (first, last and up to 18 in between)
+                sample = sorted(set(np.linspace(0, shape[0] - 1, min(shape[0], 20)).astype(int).tolist()))
+                step = 16 if rows >= 64 else 1
+                means = [float(np.mean(data[i, ::step, ::step])) for i in sample]
+                mins = [int(np.min(data[i, ::step, ::step])) for i in sample]
+                maxs = [int(np.max(data[i, ::step, ::step])) for i in sample]
                 first_frame_mean = float(np.mean(data[0]))
         except Exception as e:  # noqa: BLE001
             return fail(f"cannot read {path}: {e}")
-        size_mb = path.stat().st_size / 1e6
-        print(f"file: {path.name} {size_mb:.1f} MB shape={shape} dtype={dtype}")
-        print(f"unique ids: {uids.tolist()}")
-        print("frame means (subsampled): " + " ".join(f"{m:.0f}" for m in means))
+        size_b = path.stat().st_size
+        print(f"file: {path.name} {size_b / 1e6:.1f} MB ({size_b / 2**30:.2f} GiB) shape={shape} dtype={dtype} "
+              f"-> {shape[0]} frames in the file, {shape[0] * rows * cols * 2 / 1e6:.1f} MB of pixels")
+        gaps = int(np.sum(np.diff(uids.astype(np.int64)) != 1)) if len(uids) > 1 else 0
+        print(f"unique ids: {len(uids)} values, {uids[0]}..{uids[-1]}, {gaps} gap(s)")
+        print(f"frame means (sampled at {len(sample)} frames): " + " ".join(f"{m:.0f}" for m in means))
         problems = []
-        if shape != (n, rows, cols):
-            problems.append(f"shape {shape} != ({n}, {rows}, {cols})")
+        if shape != (total, rows, cols):
+            problems.append(f"shape {shape} != ({total}, {rows}, {cols})")
         if dtype != np.uint16:
             problems.append(f"dtype {dtype} != uint16")
-        if len(uids) != n or any(int(b - a) != 1 for a, b in zip(uids, uids[1:])):
-            problems.append(f"unique ids not contiguous: {uids.tolist()}")
+        if len(uids) != total or gaps:
+            problems.append(f"unique ids: {len(uids)} values with {gaps} gap(s), expected {total} contiguous")
         if any(mx == mn for mn, mx in zip(mins, maxs)):
             problems.append("a frame is constant (no image data)")
         if all(abs(m - 32640.0) < 1.0 for m in means):
@@ -220,8 +273,8 @@ def main(argv=None) -> int:
                 print(f"tiled: {uid[:8]}/primary/{key} shape={tshape} dtype={tdtype} frame0 mean={t_mean:.1f} "
                       f"(h5py {first_frame_mean:.1f}); other keys: "
                       f"{sorted(k for k in run['primary'] if not k.startswith('ts_'))}")
-                if tshape != (n, rows, cols):
-                    problems.append(f"tiled shape {tshape} != ({n}, {rows}, {cols})")
+                if tshape not in ((total, rows, cols), (n, fpp, rows, cols)):
+                    problems.append(f"tiled shape {tshape} != ({total}, {rows}, {cols}) or ({n}, {fpp}, {rows}, {cols})")
                 if tdtype != np.uint16:
                     problems.append(f"tiled dtype {tdtype} != uint16")
                 if abs(t_mean - first_frame_mean) > 1e-6:
@@ -231,8 +284,8 @@ def main(argv=None) -> int:
 
         if problems:
             return fail("; ".join(problems))
-        print(f"OK: {n} points, one file, {n} frames of {rows}x{cols} uint16, ids contiguous"
-              f"{', served by tiled' if tiled else ''}, {'kept' if args.keep else 'deleted'}")
+        print(f"OK: {n} points x {fpp} frame(s), one file, {total} frames of {rows}x{cols} uint16, "
+              f"ids contiguous{', served by tiled' if tiled else ''}, {'kept' if args.keep else 'deleted'}")
         return 0
     finally:
         if tiled:
@@ -241,8 +294,13 @@ def main(argv=None) -> int:
             path.unlink()
         try:
             det.cam.acquire_time.set(exposure_before).wait(timeout=10)
+            if roi_before is not None:
+                det.cam.min_y.set(roi_before[0]).wait(timeout=10)
+                det.cam.size.size_y.set(roi_before[1]).wait(timeout=10)
+            if fpp != 1:
+                det.cam.stage_sigs["num_images"] = 1
         except Exception as e:  # noqa: BLE001
-            print(f"could not restore AcquireTime {exposure_before}: {e}")
+            print(f"could not restore exposure/ROI: {e}")
 
 
 if __name__ == "__main__":

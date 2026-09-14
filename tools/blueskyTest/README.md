@@ -13,8 +13,25 @@ Two files, meant to be lifted into a queue-server startup directory later:
 tools/blueskyTest/run.sh                    # 5 points; file checked directly and through tiled, then deleted
 tools/blueskyTest/run.sh --points 10 --keep # keep the file under ~/axis-perf-tmp/bluesky/<date>/
 tools/blueskyTest/run.sh --no-tiled         # documents + file only
+tools/blueskyTest/run.sh --points 200 --exposure 0.02 --progress                # 200 full frames, 6.7 GB
+tools/blueskyTest/run.sh --points 40 --frames-per-point 1000 --rows 8 --exposure 0.00002
+                                            # 40 motor points x 1000-frame bursts at 8 rows = 40000 frames
 XV4040_DATA_ROOT=/data/xv4040 tools/blueskyTest/run.sh   # another root (must be writable by the IOC's user)
 ```
+
+`--progress` prints `point i/N, percentage, elapsed, remaining` on stderr after every point (a
+document callback; the same class works on a queue-server worker's RunEngine). `--rows` sets the
+ROI height for the run and restores it; `--frames-per-point` sets `NumImages` per trigger, the
+areaDetector way to take many fast frames per motor position (a step scan costs ~0.5 s per
+point in Channel Access round trips whatever the frame rate, so 40 000 *points* would take hours
+while 40 points × 1000 frames take 21 s).
+
+Large runs on 2026-09-14 (ADTucsen serving):
+
+| Run | Wall | Motor points saved | Frames in file | File | tiled |
+|---|---|---|---|---|---|
+| 200 points, full frame 4096×4096, 1 frame per point | 95 s (0.48 s/point) | 200 (−1 … 1) | 200, ids 91..290, 0 gaps | 6712.0 MB (6.25 GiB) | (200, 4096, 4096) uint16, frame 0 identical |
+| 40 points × 1000 frames, ROI 8×4096 | 21 s (1870 frames/s) | 40 (−1 … 1) | 40 000, ids 292..40291, 0 gaps | 2626.9 MB (2.45 GiB) | (40000, 8, 4096) uint16, frame 0 identical |
 
 ## What `main.py` checks
 
