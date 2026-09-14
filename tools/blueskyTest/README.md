@@ -85,8 +85,47 @@ could not be read back.
 | device instantiated at import inside `try/except` with a message | same (`xv4040 = make_detector()`), with `wait_for_connection` so a missing IOC fails there |
 | Pilatus devices, `root_str`/`md` constructor extras, RGB/Bayer shape branch | not carried: one detector, one color mode |
 
+## Queue-server compatibility (checked 2026-09-14)
+
+The file was loaded with the queue-server's own startup loader, `qserver-list-plans-devices`
+(bluesky-queueserver 0.0.25, installed in the same venv), from a startup directory holding a
+`00_base.py` (`motor`, `scan`, `count`) and this file as `02_area_detectors.py`:
+
+```
+devices: ['motor', 'xv4040']          xv4040: XV4040Detector, is_readable True
+plans:   ['count', 'scan', 'warmup_xv4040']
+```
+
+So a queue item `{"name": "scan", "args": [["xv4040"], "motor", -1, 1, 11]}` is valid, and
+`warmup_xv4040` is a plan the queue accepts. Things to know when deploying:
+
+- **Run `warmup_xv4040` once** after the worker environment opens and after every ROI or
+  binning change, before the first scan. Otherwise the first Stream capture at a new geometry
+  writes an empty file with "Invalid frame" in the IOC log.
+- **Environment**: `XV4040_DATA_ROOT` (data root writable by the IOC's user) and
+  `XV4040_PREFIX` can be set in the worker's environment instead of editing section 1.
+  Channel Access needs `EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO` on this host,
+  as `run.sh` sets, because both IOCs answer to the same prefix.
+- **The IOC must be up when the worker opens** its environment: `make_detector()` waits up to
+  10 s for the connection and otherwise leaves `xv4040 = None` with a printed message, as the
+  reference file does; plans then fail with a clear error instead of hanging.
+- **TiledWriter**: subscribe it in the worker (`RE.subscribe(TiledWriter(client))`); the
+  resource spec and parameters this device emits are what it needs (section above).
+
+To repeat the check:
+
+```bash
+d=$(mktemp -d); mkdir $d/startup
+printf 'from ophyd.sim import motor\nfrom bluesky.plans import scan, count\n' > $d/startup/00_base.py
+cp tools/blueskyTest/area_detectors.py $d/startup/02_area_detectors.py
+tools/blueskyTest/.venv/bin/pip install -q bluesky-queueserver
+EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO tools/blueskyTest/.venv/bin/qserver-list-plans-devices --startup-dir $d/startup --file-dir $d
+grep -A2 "xv4040\|warmup" $d/existing_plans_and_devices.yaml | head
+```
+
 ## Not covered here
 
-Hardware triggering (`TriggerMode` other than `Free Run`), the tiled writer, and the
-queue-server itself. The device is written so that dropping `area_detectors.py` into the
-startup directory and calling `scan([xv4040], motor, ...)` from a queue item is the next step.
+Hardware triggering (`TriggerMode` other than `Free Run`), and a running queue-server with the
+tiled writer subscribed in its worker (only the loader was exercised). The device is written so
+that dropping `area_detectors.py` into the startup directory and queueing
+`scan([xv4040], motor, ...)` is the next step.
