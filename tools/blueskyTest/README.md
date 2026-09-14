@@ -156,6 +156,30 @@ Things to know when deploying:
 To repeat: `tools/blueskyTest/run.sh qserver` (add `--keep` to keep the temp startup directory,
 the manager log and the HDF5 file for inspection).
 
+## Deploying on another machine (the queue-server is not on bl1101ad01)
+
+Copy only [`area_detectors.py`](area_detectors.py) into the startup directory; it depends on
+nothing else in this folder. Then three things about the other machine:
+
+1. **Channel Access must reach the IOC.** Do not pin CA to `127.0.0.1` there (our `run.sh`
+   does, because it runs on the IOC's host). Off the IOC's broadcast subnet set
+   `EPICS_CA_ADDR_LIST=<bl1101ad01's address>` and `EPICS_CA_AUTO_ADDR_LIST=NO` in the worker's
+   environment. No image travels over CA, so `EPICS_CA_MAX_ARRAY_BYTES` needs no change.
+2. **The data directory must be shared.** The IOC writes the files on bl1101ad01; the
+   queue-server and tiled hosts must see the same storage. `XV4040_FILES_ROOT` is the path as
+   the IOC sees it (it goes into `HDF1:FilePath`); `XV4040_READ_ROOT` is the same storage as the
+   other machine sees it (it goes into the documents tiled follows). Equal on one machine, hence
+   equal here; bluesky-web's `02_area_detectors.py` has the same pair (`PILATUS_FILES_ROOT`,
+   `BLUESKY_FILES_ROOT`). The root must be writable by the IOC's user (`daenglis` for
+   `ioc-xv4040`, `gabrielgazolla` for `ioc-axissxr40`); the dated sub-directories the IOC creates
+   itself (`create_directory -3`, staged by ophyd).
+3. **Tiled must be allowed to read that storage**: `-r <root>` on `tiled serve`, or
+   `readable_storage` in its configuration.
+
+Also: the startup directory needs a `user_group_permissions.yaml` with the `primary` group
+(bluesky-web submits as `primary`; without the file the manager answers "Unknown user
+group"), and the IOC must be up when the worker environment opens.
+
 ## Not covered here
 
 Hardware triggering (`TriggerMode` other than `Free Run`), and the beamline's own
